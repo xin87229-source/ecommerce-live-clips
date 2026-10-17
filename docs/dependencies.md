@@ -27,6 +27,9 @@ D:\eclip\workspaces\shop-a\   商家配置、缓存、听审记录和产物
 若已经有正常的 64 位 Python 3.12，直接核对版本。否则从 [Python 官方 Windows 下载页](https://www.python.org/downloads/windows/) 取得 Python install manager，按官方界面安装，再在 PowerShell 中执行下面的安装命令。已有旧 `py` 启动器时，`pymanager` 可避免名称冲突。安装管理器和运行时属于使用者主动安装的步骤，项目不会静默安装。[官方 Windows 说明](https://docs.python.org/3/using/windows.html)
 
 ```powershell
+# 仅对本次会话及其 Python 子进程生效，避免中文 Windows 的 GBK 输出被按 UTF-8 读取
+$env:PYTHONUTF8 = '1'
+
 # 仅在已安装官方 Python install manager、且尚无 Python 3.12 时执行
 pymanager install 3.12
 
