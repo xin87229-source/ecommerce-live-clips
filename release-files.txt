@@ -57,6 +57,7 @@ presets/basic.json
 tests/test_candidate.py
 tests/test_apparel_strategy.py
 tests/test_auto_workflow.py
+tests/test_color_range.py
 tests/test_cli.py
 tests/test_delivery_portable.py
 tests/test_edit_batch.py

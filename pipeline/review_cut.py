@@ -192,7 +192,8 @@ def render(media, record, destination):
             crop_filter = f"crop={crop['width']}:{crop['height']}:{crop['x']}:{crop['y']},"
         filters.append(f'[{video_index}:v:0]trim=start={va:.9f}:end={vb:.9f},'
                        f'setpts=(PTS-STARTPTS)/{speed:.12f},{crop_filter}'
-                       'scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,'
+                       'scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2:'
+                       'in_range=auto:out_range=tv,'
                        'pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,'
                        f'fps=30:start_time=0,tpad=stop_mode=clone:stop_duration=1,'
                        f'trim=end_frame={segment["frame_count"]},setpts=N/(30*TB),format=yuv420p[v{index}]')
@@ -207,7 +208,7 @@ def render(media, record, destination):
     filters.append(f'[ja]apad,atrim=duration={record["duration_seconds"]:.9f},asetpts=N/SR/TB[audio]')
     media.write_media(args + ['-filter_complex', ';'.join(filters), '-map', '[video]', '-map', '[audio]',
                              '-map_metadata', '-1', '-map_chapters', '-1', '-c:v', 'libx264',
-                             '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+                             '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-color_range', 'tv',
                              '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
                              '-movflags', '+faststart', str(destination)], destination, delivery=True)
 
