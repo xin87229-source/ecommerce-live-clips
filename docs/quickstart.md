@@ -17,6 +17,8 @@
 ## 1. 选工作目录并检查环境
 
 ```powershell
+# 每个新 PowerShell 会话设置一次；不修改系统编码或全局环境
+$env:PYTHONUTF8 = '1'
 $Install = 'D:\eclip\project'
 $Python = 'D:\eclip\envs\trial-01\Scripts\python.exe'
 $Workspace = 'D:\eclip\workspaces\shop-a'
@@ -122,6 +124,7 @@ if ($LASTEXITCODE -ne 0) { throw '卡片需要重新审核，请先处理绑定�
 关闭对话不等于任务丢失。重新打开同一个完整项目，恢复 `$Install`、`$Python`、`$Workspace` 三个真实路径，再读已有状态：
 
 ```powershell
+$env:PYTHONUTF8 = '1'
 & $Python "$Install/cli.py" --workspace "$Workspace" status
 & $Python "$Install/cli.py" --workspace "$Workspace" doctor
 ```
