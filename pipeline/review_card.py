@@ -10,7 +10,7 @@ import shutil
 
 from runtime import ROOT
 from selector_support import clock, file_hash, key, read, validate_transcript
-from source_windows import import_entry
+from source_windows import import_entry, _preview_window_duration
 from quality_support import evidence_file
 
 
@@ -44,6 +44,14 @@ def file_ref(path):
     return {'path': str(path), 'sha256': file_hash(path)}
 
 
+def review_window_duration(item):
+    duration = item['window']['duration_seconds']
+    if type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError('听审卡窗口时长必须是有效正数')
+    # Preserve legacy short-window records; only prove a >120s rounding allowance.
+    return _preview_window_duration(item) if duration > 120 else duration
+
+
 def bind_range(entry, sources, default):
     extraction = str(local_file(entry.get('extraction', default), ROOT / 'private-context/source-windows'))
     source = next((s for s in sources if s['extraction'] == extraction), None)
@@ -68,9 +76,7 @@ def checked_inputs(spec_path):
     # The original stays outside the workspace; reuse the existing extraction
     # validator to hash it once and check the zero-origin/source-time mapping.
     mapping = import_entry(extraction)
-    duration = item['window']['duration_seconds']
-    if not 0 < duration <= 120:
-        raise ValueError('听审卡只接受不超过120秒的原片窗口')
+    duration = review_window_duration(item)
     expected_extraction = {'path': str(extraction), 'sha256': file_hash(extraction)}
     if (preview.get('extraction') != expected_extraction
             or preview.get('source_sha256') != item['source']['sha256']
@@ -115,11 +121,11 @@ def checked_inputs(spec_path):
         extra = read(path)
         media = local_file(extra['window']['path'], path.parent)
         import_entry(path)
-        length = extra['window']['duration_seconds']
-        if (extra.get('schema_version') != 1 or not 0 < length <= 120
+        length = review_window_duration(extra)
+        if (extra.get('schema_version') != 1
                 or extra['source']['sha256'] != item['source']['sha256']
                 or any(s['extraction'] == str(path) for s in sources)):
-            raise ValueError('附加窗口须唯一、来自同一原片且不超过120秒')
+            raise ValueError('附加窗口须唯一、来自同一原片且请求不超过120秒')
         sources.append(dict(extraction=str(path), path=str(media), media_file=f'source-{number}.mp4',
                             duration_seconds=length, source_span=extra['source_span'],
                             source_sha256=extra['source']['sha256'], window_sha256=extra['window']['sha256']))

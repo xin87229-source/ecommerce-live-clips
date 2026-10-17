@@ -1,5 +1,6 @@
 """Review cards bind existing local media without manufacturing review evidence."""
 import hashlib
+import copy
 import importlib.util
 import json
 import os
@@ -247,6 +248,95 @@ class ReviewCardTests(unittest.TestCase):
         self.assertEqual(record['question']['source_sha256'], self.sha(self.source))
         self.assertEqual(record['question']['window_sha256'], self.sha(media))
         self.assertEqual(record['review_status'], 'pending')
+
+    def boundary_window(self, additional=False):
+        data = copy.deepcopy(self.extracted)
+        path = self.extraction
+        if additional:
+            path = self.folder.parent/'window-boundary/extraction.json'
+            path.parent.mkdir()
+            media = path.parent/'window.mp4'
+            media.write_bytes(b'synthetic aligned boundary window')
+            data['window'].update(path=str(media), sha256=self.sha(media))
+        offset = 100.012
+        data.update(requested_range=[100,220],offset_seconds=offset,
+                    source_span=[offset,offset+120.005],
+                    frame_grid={'first_pts':101.502,'last_pts':221.507,'frame_count':2641,
+                        'aligned_start_seconds':offset,'aligned_end_seconds':220.017,
+                        'requested_start_pts':101.49,'requested_end_pts':221.49,
+                        'video_start_pts':1.49,'expected_step_seconds':1/22,
+                        'max_step_error_seconds':.0015454545459347574})
+        data['source']['duration_seconds'] = 1000
+        data['window']['duration_seconds'] = 120.005
+        self.save(path,data)
+        self.spec_data.pop('poster',None)
+        if additional:
+            self.spec_data['additional_extractions'] = [str(path)]
+            self.spec_data['questions'][0].update(extraction=str(path),window_range=[119,120.005])
+        else:
+            transcript=json.loads(self.transcript.read_text('utf-8'))
+            transcript['source']['duration_seconds']=120.005
+            self.save(self.transcript,transcript)
+            self.preview_data.update(extraction={'path':str(path),'sha256':self.sha(path)},
+                                     source_span=data['source_span'],
+                                     transcript_cache={'path':str(self.transcript),'sha256':self.sha(self.transcript)})
+            self.preview_data['segments'][0]['source_range']=[offset+1,offset+4]
+            self.save(self.preview,self.preview_data)
+            self.spec_data['questions'][0]['window_range']=[119,120.005]
+        self.save(self.spec,self.spec_data)
+        return path,data
+
+    def test_primary_120_second_request_with_frame_rounding_generates_card(self):
+        self.boundary_window()
+        before=self.card.read_bytes()
+        result=self.call()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'],'unreviewed_review_card')
+        page=self.output.read_text('utf-8')
+        self.assertIn('data-end="120.005"',page)
+        self.assertEqual(self.card.read_bytes(),before)
+        self.assertEqual(self.sha(self.output.parent/'review.mp4'),self.sha(self.window))
+        self.assertEqual(self.call('check','--card',str(self.output)).returncode,0)
+
+    def test_additional_120_second_request_with_frame_rounding_generates_card(self):
+        path,data=self.boundary_window(additional=True)
+        before=self.card.read_bytes()
+        result=self.call()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        page=self.output.read_text('utf-8')
+        self.assertIn('data-source="source-2.mp4" data-start="119" data-end="120.005"',page)
+        self.assertEqual(self.sha(self.output.parent/'source-2.mp4'),data['window']['sha256'])
+        self.assertEqual(self.card.read_bytes(),before)
+        self.assertEqual(self.call('check','--card',str(self.output)).returncode,0)
+
+    def test_boundary_main_and_extra_without_proven_mapping_are_rejected(self):
+        # Recreate each fixture separately; no failure may leave an output directory.
+        for additional in (False,True):
+            if additional:
+                self.save(self.extraction,self.extracted)
+                transcript=json.loads(self.transcript.read_text('utf-8'))
+                transcript['source']['duration_seconds']=10
+                self.save(self.transcript,transcript)
+                self.preview_data.update(extraction={'path':str(self.extraction),'sha256':self.sha(self.extraction)},
+                                         source_span=[20,30],
+                                         transcript_cache={'path':str(self.transcript),'sha256':self.sha(self.transcript)})
+                self.preview_data['segments'][0]['source_range']=[21,24]
+                self.save(self.preview,self.preview_data)
+            path,original=self.boundary_window(additional)
+            for invalid in ('missing_mapping','request_over_limit','duration_over_allowance'):
+                data=copy.deepcopy(original)
+                if invalid=='missing_mapping':del data['frame_grid']['aligned_end_seconds']
+                elif invalid=='request_over_limit':data['requested_range'][1]=220.01
+                else:
+                    data['window']['duration_seconds']=120.07
+                    data['source_span'][1]=data['offset_seconds']+120.07
+                self.save(path,data)
+                if not additional:
+                    self.preview_data['extraction']['sha256']=self.sha(path)
+                    self.save(self.preview,self.preview_data)
+                with self.subTest(additional=additional,invalid=invalid):
+                    self.assertNotEqual(self.call().returncode,0)
+                    self.assertFalse(self.output.parent.exists())
 
     def test_rejects_question_feedback_outside_bound_version_range(self):
         self.comparison()

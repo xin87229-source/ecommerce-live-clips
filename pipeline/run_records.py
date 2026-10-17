@@ -90,6 +90,37 @@ PRE_SUBMISSION = {'NOT_UPLOADED_NOT_SUBMITTED', 'ENVIRONMENT_NOT_READY', 'READY_
                   'PRODUCT_BOUND_DUPLICATED', 'PRODUCT_BOUND_ERROR', 'NEEDS_LOGIN', 'NEEDS_CAPTCHA',
                   'AWAITING_USER_CONFIRMATION', 'PRODUCT_QUOTA_BLOCKED',
                   'running', 'completed', 'failed', 'blocked', 'reused', 'ready_for_manual_publish'}
+
+
+def submission_state(card):
+    """Read task-state consistency without changing or inferring submission."""
+    result = {'status': 'UNKNOWN', 'submitted': None}
+    uncertain = {'SUBMITTING', 'SUBMIT_UNKNOWN'}
+    try:
+        if not isinstance(card, dict):
+            raise ValueError('任务卡必须为对象')
+        state, submitted = card.get('status'), card.get('submitted')
+        if not isinstance(state, str) or not state.strip():
+            raise ValueError('状态字段缺失或类型无效')
+        if 'submitted' not in card or (submitted is not None and type(submitted) is not bool):
+            raise ValueError('submitted字段缺失或类型无效，不能推断为未提交')
+        if state in {'UNKNOWN', 'CONFLICT'}:
+            result.update(status=state, error='原记录状态尚未核实')
+        elif state not in PRE_SUBMISSION | PROTECTED | {'REJECTED_ORIGINALITY'}:
+            raise ValueError('无法识别的状态: ' + state)
+        elif submitted is None and state not in uncertain:
+            raise ValueError('当前状态缺少明确的submitted布尔值')
+        elif ((state in PRE_SUBMISSION and submitted is not False)
+              or (state in PROTECTED - uncertain and submitted is not True)
+              or (state in uncertain and submitted is not None)):
+            result.update(status='CONFLICT', error='status与submitted互相矛盾，请核对原记录')
+        else:
+            result.update(status=state, submitted=submitted)
+    except ValueError as error:
+        result.update(error=str(error))
+    return result
+
+
 OUTCOME_TRANSITIONS = {
     'SUBMITTING': PROTECTED,
     'SUBMIT_UNKNOWN': PROTECTED-{'SUBMITTING'},

@@ -76,7 +76,9 @@ def asr_input(path):
                 or segment.get('window_range') != [original['start'], original['end']]
                 or segment.get('source_range') != [offset + original['start'], min(offset + original['end'], end)]):
             raise ValueError('ASR原文或时间范围与原始缓存不符')
-    return dict(preview=preview, path=str(path), extraction=str(extraction), item=item,
+    timed = ({segment['id']: copy.deepcopy(segment.get('words', [])) for segment in transcript['segments']}
+             if transcript['asr'].get('word_timestamps') is True else {})
+    return dict(preview=preview, path=str(path), extraction=str(extraction), item=item, timed_words=timed,
                 inputs={str(p): file_hash(p) for p in (path, extraction, cache, window)})
 
 
@@ -141,6 +143,9 @@ def plan(spec_path):
             cues.append(dict(id=segment['id'], clip_id=clip['id'], text=segment['text'],
                              start=final_start, end=final_end, source_range=segment['source_range'],
                              window_range=[a, b], extraction=asr['extraction']))
+            if segment['id'] in asr['timed_words']:
+                cues[-1].update(words=copy.deepcopy(asr['timed_words'][segment['id']]),
+                                word_timing='machine_alignment_not_verified')
     if not cues:
         raise ValueError('没有完整非空ASR原句，不能生成伪字幕')
     terms = spec.get('highlight_terms', [])
@@ -199,12 +204,79 @@ def wrap(raw, font, width=960, highlights=(), highlight_font=None, bold=False, b
     return [left, right]
 
 
+def timed_pages(cue, fit, highlights=()):
+    """Paginate one intact ASR segment at bound machine word times, never edit its text."""
+    words = cue.get('words')
+    if (cue.get('word_timing') != 'machine_alignment_not_verified'
+            or not isinstance(words, list) or not words):
+        raise ValueError('长句缺少机器词时间；请重新转写或换完整句，不能按字数均摊时间')
+    a, b = cue['window_range']
+    previous = a
+    for word in words:
+        if (not isinstance(word, dict) or not isinstance(word.get('word'), str) or not word['word']
+                or any(type(word.get(k)) not in (int, float) or not math.isfinite(word[k])
+                       for k in ('start', 'end', 'probability'))
+                or not 0 <= word['probability'] <= 1
+                or not a <= previous <= word['start'] < word['end'] <= b):
+            raise ValueError('机器词时间缺失、零时长、重叠或越界；不能静默补齐或裁短')
+        previous = word['end']
+    if ''.join(word['word'] for word in words) != cue['text']:
+        raise ValueError('机器词串与绑定原句不一致；不能借用其他转写的时间')
+    scale = (cue['end']-cue['start'])/(b-a)
+    # All selected phrases stay atomic, including phrases spanning several machine words.
+    spans = subtitle.highlight_spans(cue['text'], highlights, len(cue['text']))
+    ends, total = [], 0
+    for word in words:
+        total += len(word['word'])
+        ends.append(total)
+    boundaries = {i+1 for i, end in enumerate(ends) if not any(x < end < y for x, y, _ in spans)}
+
+    def fits(start, stop):
+        value = ''.join(word['word'] for word in words[start:stop])
+        if not value.strip():
+            return False
+        try:
+            fit(value)
+            return True
+        except ValueError:
+            return False
+
+    pages, start = [], 0
+    while start < len(words):
+        choices = []
+        for stop in range(start+1, len(words)+1):
+            if stop not in boundaries:
+                continue
+            if not fits(start, stop):
+                break
+            choices.append(stop)
+        if not choices:
+            raise ValueError('单个机器词或完整重点词超过字幕安全宽度；不能拆词或伪造时间')
+        stop = choices[-1]
+        if stop < len(words) and fits(stop, len(words)):
+            # Balance the last two pages using real durations, without moving their boundaries.
+            balanced = [end for end in choices if end < len(words) and fits(end, len(words))]
+            stop = min(balanced, key=lambda end: abs((words[end-1]['end']-words[start]['start'])
+                                                    -(words[-1]['end']-words[end]['start'])))
+        wa, wb = words[start]['start'], words[stop-1]['end']
+        first, last = cue['start']+(wa-a)*scale, cue['start']+(wb-a)*scale
+        if round(first*100) >= round(last*100):
+            raise ValueError('机器词页不足ASS时间精度；不能延长或移动口播时间')
+        pages.append(dict(cue, text=''.join(word['word'] for word in words[start:stop]),
+                          start=first, end=last, window_range=[wa, wb],
+                          source_range=[cue['source_range'][0]+wa-a, cue['source_range'][0]+wb-a],
+                          words=copy.deepcopy(words[start:stop]), word_span=[start, stop],
+                          source_cues=[copy.deepcopy(cue)]))
+        start = stop
+    return pages
+
+
 def readable_cues(original, fit):
     """Group short machine segments, preserving every original and its own range."""
     groups = []
     for cue in original:
-        current = dict(cue, source_cues=[copy.deepcopy(cue)])
-        if groups:
+        current = dict(cue, source_cues=copy.deepcopy(cue.get('source_cues', [cue])))
+        if groups and 'word_span' not in cue and 'word_span' not in groups[-1]:
             previous = groups[-1]
             last = previous['source_cues'][-1]
             adjacent = (previous['clip_id'] == cue['clip_id']
@@ -224,6 +296,8 @@ def readable_cues(original, fit):
                                     source_range=[previous['source_range'][0], cue['source_range'][1]],
                                     window_range=[previous['window_range'][0], cue['window_range'][1]])
                     previous['source_cues'].append(copy.deepcopy(cue))
+                    previous.pop('words', None)
+                    previous.pop('word_timing', None)
                     continue
         groups.append(current)
     return groups
@@ -243,8 +317,16 @@ def subtitles(record, style, family, font, highlight_font=None):
         return wrap(raw, font, highlights=terms, highlight_font=highlight_font,
                     bold=style.get('highlight_bold', False), border=2*(style['outline']+style['shadow']))
 
+    display = []
+    for cue in record['cues']:
+        try:
+            fit(cue['text'])
+        except ValueError:
+            display.extend(timed_pages(cue, fit, record.get('highlight_terms', [])))
+        else:
+            display.append(cue)
     cues = []
-    for cue in readable_cues(record['cues'], fit):
+    for cue in readable_cues(display, fit):
         hits = subtitle.highlight_spans(cue['text'], record.get('highlight_terms', []), style['max_highlights'])
         terms = list(dict.fromkeys(hit[2] for hit in hits))
         lines = fit(cue['text'])
@@ -271,7 +353,9 @@ def readability(cues, original_count):
             dense.append(entry)
     return {'original_segment_count': original_count, 'display_cue_count': len(cues),
             'short_cues': short, 'dense_cues': dense,
+            'machine_timed_pages': sum('word_span' in cue for cue in cues),
             'grouping': 'same_clip_contiguous_source_only_max_4.5_seconds',
+            'pagination': 'complete_raw_segment_preserved_validated_machine_word_boundaries_only',
             'original_texts_preserved': True,
             'note': '仅阅读风险提示；1.2秒/每秒12字为本模板检查阈值，不证明口播同步、语义或听审通过。'}
 

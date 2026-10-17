@@ -25,7 +25,8 @@ class AutoWorkflowTests(unittest.TestCase):
         self.card.parent.mkdir(parents=True)
         self.source = self.root / 'source.bin'
         self.source.write_bytes(b'original')
-        self.card.write_text(json.dumps({'task_context': {'source_video': str(self.source)}}))
+        self.card.write_text(json.dumps({'status': 'NOT_UPLOADED_NOT_SUBMITTED', 'submitted': False,
+                                        'task_context': {'source_video': str(self.source)}}))
         self.request = {'run_id': 'unit', 'task_record': str(self.card),
                         'windows': [{'start': 1, 'end': 3}], 'category': 'dress'}
 
@@ -334,3 +335,61 @@ class AutoWorkflowTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'visual.*对象'):
                     api.run(request)
         self.assertFalse(calls)
+
+    def test_existing_window_cannot_hide_unknown_conflicting_or_submitted_task(self):
+        api, _, request, _, _, _, calls, _ = self.rehearsal_fixture()
+        original = api.read(self.card)
+        cases = [({'status': 'NOT_UPLOADED_NOT_SUBMITTED', 'submitted': True}, 'CONFLICT'),
+                 ({'status': 'NOT_UPLOADED_NOT_SUBMITTED'}, 'UNKNOWN'),
+                 ({'status': 'PUBLISHED_VERIFIED', 'submitted': True}, 'PUBLISHED_VERIFIED')]
+        for index, (fields, message) in enumerate(cases):
+            with self.subTest(fields=fields):
+                changed = dict(task_context=original['task_context'], **fields)
+                self.card.write_text(json.dumps(changed))
+                before = self.card.read_bytes()
+                with self.assertRaisesRegex(ValueError, message):
+                    api.run(dict(request, run_id=f'bad-state-{index}'))
+                self.assertEqual(self.card.read_bytes(), before)
+        self.assertFalse(calls)
+
+    def test_status_rechecks_task_semantics_even_when_bindings_match(self):
+        api, _, request, _, _, _, _, _ = self.rehearsal_fixture()
+        api.run(request)
+        state_path = api.folder_for('unit') / 'state.json'
+        state = api.read(state_path)
+        card = api.read(self.card)
+        card['submitted'] = True
+        self.card.write_text(json.dumps(card))
+        # Models an older run created from already-contradictory task state.
+        state['bindings'][str(self.card)] = api.digest(self.card)
+        api.save(state_path, state)
+        with self.assertRaisesRegex(ValueError, 'CONFLICT'):
+            api.status('unit')
+
+    def test_failed_asr_reports_stage_and_resumes_without_reextracting(self):
+        api, _, request, _, _, preview, _, _ = self.rehearsal_fixture()
+        with patch.object(api.source_windows, 'transcribe_preview', side_effect=RuntimeError('model test failure')):
+            with self.assertRaisesRegex(RuntimeError, 'model test failure'):
+                api.run(self.request)
+        report = api.status('unit')
+        self.assertEqual(report.get('status'), 'ERROR')
+        self.assertEqual(report['failed_stage'], 'asr-0')
+        self.assertIn('model test failure', report['error'])
+        self.assertIn('window-0', report['completed_stages'])
+        with patch.object(api, 'extract_or_resume') as extract:
+            resumed = api.run(self.request)
+            extract.assert_not_called()
+        self.assertEqual(resumed['status'], 'needs_agent_decision')
+        self.assertEqual(len(api.read(api.folder_for('unit') / 'state.json')['failures']), 1)
+
+    def test_empty_partial_report_has_explicit_recovery_status(self):
+        api, _, _, _, _, _, _, _ = self.rehearsal_fixture()
+        api.run(self.request)
+        path = api.folder_for('unit') / 'state.json'
+        state = api.read(path)
+        state['report'] = {}
+        api.save(path, state)
+        report = api.status('unit')
+        self.assertEqual(report.get('status'), 'needs_resume')
+        self.assertTrue(report['completed_stages'])
+        self.assertIn('next_action', report)

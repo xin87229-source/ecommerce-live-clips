@@ -74,8 +74,10 @@ class SourceWindowsTests(unittest.TestCase):
                       'source': {'path': str(self.source), 'sha256': self.support.file_hash(self.source),
                                  'duration_seconds': 100},
                       'requested_range': [10, 20], 'source_span': [10, 20], 'offset_seconds': 10,
-                      'frame_grid': {'aligned_start_seconds':10,'expected_step_seconds':1/30,
-                                     'first_pts':10,'last_pts':20},
+                      'frame_grid': {'aligned_start_seconds':10,'aligned_end_seconds':20,
+                                     'expected_step_seconds':1/30,'first_pts':10,'last_pts':20,
+                                     'video_start_pts':0,'requested_start_pts':10,'requested_end_pts':20,
+                                     'frame_count':301,'max_step_error_seconds':0},
                       'source_timeline':{'video_start_seconds':0,'audio_start_seconds':0},
                       'window_audio_audit':{'first':0,'end':10,'frames':1},
                       'window': {'path': str(video), 'sha256': self.support.file_hash(video),
@@ -326,6 +328,90 @@ class SourceWindowsTests(unittest.TestCase):
         path.write_text(json.dumps(extraction),encoding='utf-8')
         with patch.object(transcribe_adapter,'transcribe') as asr:
             with self.assertRaisesRegex(ValueError,'120'):
+                self.windows.transcribe_preview(path)
+        asr.assert_not_called()
+
+    def _aligned_boundary_preview(self):
+        path, item = self._extraction()
+        # Actual 22 fps TS failure: a 120-second request becomes 120.005 seconds.
+        item['source']['duration_seconds'] = 13174.990444
+        item['requested_range'] = [6910, 7030]
+        item['offset_seconds'] = 6910.012000000001
+        item['source_span'] = [item['offset_seconds'], item['offset_seconds']+120.005]
+        item['window']['duration_seconds'] = 120.005
+        item['frame_grid'] = {
+            'first_pts':6911.502,'last_pts':7031.507,'frame_count':2641,
+            'aligned_start_seconds':6910.012000000001,'aligned_end_seconds':7030.017,
+            'requested_start_pts':6911.49,'requested_end_pts':7031.49,'video_start_pts':1.49,
+            'expected_step_seconds':1/22,'max_step_error_seconds':.0015454545459347574}
+        item['source_timeline'] = {'video_start_seconds':1.49,'audio_start_seconds':1.642}
+        path.write_text(json.dumps(item), encoding='utf-8')
+        return path, item
+
+    def test_preview_accepts_120_second_request_with_verified_frame_rounding(self):
+        import transcribe_adapter
+        path, item = self._aligned_boundary_preview()
+        original = path.read_bytes()
+        transcript = {'source':{'sha256':item['window']['sha256'],'duration_seconds':120.005},
+                      'asr':{'config_hash':'test-model'},
+                      'segments':[{'id':'s1','start':119,'end':120.005,'text':'保留实际末句'}]}
+        cache = self.workspace/'private-context/boundary-transcript.json'
+        cache.write_text(json.dumps(transcript), encoding='utf-8')
+        class Media:
+            def __init__(self, config, log): pass
+            def probe(self, window):
+                return {'duration':120.005,'video_start':0,'audio':{'start':0},'fps':22}
+        with patch.object(self.windows,'MediaAdapter',Media), \
+             patch.object(transcribe_adapter,'transcribe',return_value=(transcript,cache,{})) as asr:
+            result = self.windows.transcribe_preview(path)
+        asr.assert_called_once()
+        preview = self.support.read(result['preview_path'])
+        self.assertEqual(preview['source_span'], item['source_span'])
+        self.assertEqual(preview['segments'][0]['window_range'], [119,120.005])
+        self.assertEqual(preview['segments'][0]['source_range'][1], item['source_span'][1])
+        self.assertFalse(preview['transcript_verified'])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_preview_rejects_unproven_boundary_allowance_before_asr(self):
+        import copy
+        import transcribe_adapter
+        path, original = self._aligned_boundary_preview()
+        cases = ['request_over_limit','duration_too_long','missing_end','invalid_step',
+                 'misaligned_end','changed_pts','non_continuous_grid']
+        for case in cases:
+            item = copy.deepcopy(original)
+            if case == 'request_over_limit':
+                item['requested_range'][1] = 7030.01
+            elif case == 'duration_too_long':
+                item['window']['duration_seconds'] = 120.07
+                item['source_span'][1] = item['offset_seconds']+120.07
+            elif case == 'missing_end':
+                del item['frame_grid']['aligned_end_seconds']
+            elif case == 'invalid_step':
+                item['frame_grid']['expected_step_seconds'] = 5
+            elif case == 'misaligned_end':
+                item['frame_grid']['aligned_end_seconds'] = 7030.06
+                item['frame_grid']['last_pts'] = 7031.55
+            elif case == 'changed_pts':
+                item['frame_grid']['last_pts'] += .01
+            elif case == 'non_continuous_grid':
+                item['frame_grid']['max_step_error_seconds'] = .003
+            path.write_text(json.dumps(item), encoding='utf-8')
+            with self.subTest(case=case), patch.object(transcribe_adapter,'transcribe') as asr:
+                with self.assertRaises(ValueError):
+                    self.windows.transcribe_preview(path)
+                asr.assert_not_called()
+
+    def test_preview_boundary_probe_must_still_match_extraction_duration(self):
+        import transcribe_adapter
+        path, _ = self._aligned_boundary_preview()
+        class Media:
+            def __init__(self, config, log): pass
+            def probe(self, window):
+                return {'duration':120.007,'video_start':0,'audio':{'start':0},'fps':22}
+        with patch.object(self.windows,'MediaAdapter',Media), \
+             patch.object(transcribe_adapter,'transcribe') as asr:
+            with self.assertRaisesRegex(ValueError,'实际时长与抽取证据'):
                 self.windows.transcribe_preview(path)
         asr.assert_not_called()
 

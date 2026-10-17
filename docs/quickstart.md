@@ -56,13 +56,13 @@ $WindowEnd = 30.0
 
 `inspect` 的抽帧只是线索，不是同款结论。先看商品参考及目标区间画面、听原声，再按原片真实帧时间选窗口。`extract` 会返回 `extraction.json`；逐张看其三张 `sample_frames`，完整听 `audio_review`，在 `$Workspace/private-context` 写与这些路径、哈希、原时间相符的审核 JSON。结构见 [操作参考：原片与同款窗口](pipeline-reference.md#1-原片与同款窗口)。没有实际能力或发现错款时保持 `unknown`，不要填写 `matched`。
 
-若已配置本地模型，且本次抽取窗口实际时长不超过 120 秒，可以先看**未审核 ASR 预览**辅助定位口播：
+若已配置本地模型，且本次原片请求区间不超过 120 秒，可以先看**未审核 ASR 预览**辅助定位口播。实际窗口因帧对齐略超请求时长时，仅在抽取映射及真实媒体共同验证这一差值后接受：
 
 ```powershell
 & $Python "$Install/cli.py" --workspace "$Workspace" window transcribe-preview --extraction '<本次extraction.json绝对路径>'
 ```
 
-预览返回 `preview_path` 与原片时间轴对应的机器转写片段；文件仍标记 `same_product=unknown`、`audio_listening=not_performed`、`transcript_verified=false`。它不更新任务卡，也不能替代亲自听审或给错字提供纠错证据。模型缺失、窗口超过 120 秒或缺少听审能力时，不要借这个入口填写 `matched`。
+预览返回 `preview_path` 与原片时间轴对应的机器转写片段；文件仍标记 `same_product=unknown`、`audio_listening=not_performed`、`transcript_verified=false`。它不更新任务卡，也不能替代亲自听审或给错字提供纠错证据。模型缺失、请求区间超过 120 秒、映射异常或缺少听审能力时，不要借这个入口填写 `matched`。
 
 需要运营听审时，可用 `review-card` 把本次窗口、机器转写、拟用顺序和疑词生成一张本地审核卡，操作见[人工听审卡](human-review.md)。运营可点时间回听、填写实际听到的原话，再把反馈复制给 AI；不需要编辑 JSON。播放过视频不代表已审核，页面不会自动把任务改为通过。收到真实反馈后，AI 保存用户原话并只记录已确认的范围。
 

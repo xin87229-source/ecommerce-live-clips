@@ -266,6 +266,39 @@ def import_entry(extraction_path):
                         'evidence': {'path': str(path), 'sha256': file_hash(path)}}}
 
 
+def _preview_window_duration(item):
+    """Keep the 120-second request limit while verifying frame/container rounding."""
+    requested = item.get('requested_range')
+    duration = item['window']['duration_seconds']
+    if (not isinstance(requested, list) or len(requested) != 2
+            or any(type(value) not in (int, float) or not math.isfinite(value)
+                   for value in [*requested, duration])
+            or not 0 <= requested[0] < requested[1] or requested[1]-requested[0] > 120
+            or duration <= 0):
+        raise ValueError('ASR预览只允许有效原片请求范围不超过120秒的已抽取窗口')
+    grid = item.get('frame_grid') or {}
+    fields = ('aligned_start_seconds', 'aligned_end_seconds', 'expected_step_seconds',
+              'first_pts', 'last_pts', 'video_start_pts', 'requested_start_pts',
+              'requested_end_pts', 'max_step_error_seconds')
+    if (not isinstance(grid, dict) or any(type(grid.get(key)) not in (int, float)
+            or not math.isfinite(grid[key]) for key in fields)
+            or type(grid.get('frame_count')) is not int or grid['frame_count'] < 2):
+        raise ValueError('ASR预览缺少有效帧映射，不能推断120秒边界余量')
+    start, end = grid['aligned_start_seconds'], grid['aligned_end_seconds']
+    step, origin = grid['expected_step_seconds'], grid['video_start_pts']
+    if (not 1/120 <= step <= 1 or not 0 <= grid['max_step_error_seconds'] <= .002
+            or not 0 <= start < end or origin < 0
+            or abs(start-requested[0]) > step/2+.002
+            or abs(end-requested[1]) > step/2+.002
+            or any(abs(grid[key]-expected) > .001 for key, expected in
+                   [('first_pts', origin+start), ('last_pts', origin+end),
+                    ('requested_start_pts', origin+requested[0]),
+                    ('requested_end_pts', origin+requested[1])])
+            or abs(duration-(end-start)) > min(step, .05)+.000001):
+        raise ValueError('ASR预览实际时长或帧映射超出已验证的对齐余量')
+    return duration
+
+
 def transcribe_preview(extraction_path):
     """ASR for one reviewed-length extracted file; never asserts human listening."""
     path = Path(extraction_path).resolve(strict=True)
@@ -273,10 +306,7 @@ def transcribe_preview(extraction_path):
     item = read(path)
     window_info = item['window']
     window = Path(mapping['window_video'])
-    duration = window_info['duration_seconds']
-    if (type(duration) not in (int, float) or not math.isfinite(duration)
-            or not 0 < duration <= 120):
-        raise ValueError('ASR预览只允许当前工作目录已抽取且不超过120秒的窗口')
+    duration = _preview_window_duration(item)
     if (not path.parent.name.startswith('window-') or item.get('schema_version') != 1
             or item.get('review_status') != 'unknown' or not item.get('frame_grid')
             or not item.get('source_timeline') or not item.get('window_audio_audit')
@@ -295,7 +325,7 @@ def transcribe_preview(extraction_path):
     media = _media(path.parent)
     meta = media.probe(window)
     if (abs(meta['video_start']) > .001 or abs(meta['audio']['start']) > .001
-            or abs(meta['duration'] - duration) > .001 or meta['duration'] > 120):
+            or abs(meta['duration'] - duration) > .001):
         raise ValueError('ASR预览窗口起点或实际时长与抽取证据不符')
     from transcribe_adapter import transcribe
     transcript, cache, metrics = transcribe(window, meta)

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import time
+from numbers import Real
 from pathlib import Path
 
 from selector_support import PRIVATE, atomic, file_hash, key, read, validate_transcript
@@ -12,9 +13,16 @@ from runtime import config
 COMMIT = "ed9a06cd89a93e47838f564998a6c09b655d7f43"
 MODEL_REVISION = "536b0662742c02347bc0e980a01041f333bce120"
 TAIL_TOLERANCE_SECONDS = 2.0
-OPTIONS = {"language": "zh", "task": "transcribe", "word_timestamps": False,
+OPTIONS = {"language": "zh", "task": "transcribe", "word_timestamps": True,
            "vad_filter": True, "vad_parameters": {"min_silence_duration_ms": 2000, "speech_pad_ms": 400},
            "beam_size": 5, "condition_on_previous_text": True, "without_timestamps": False}
+
+
+def machine_number(value):
+    """Word alignment returns NumPy scalars; persist native numbers without accepting bool/NaN."""
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+        raise ValueError('模型时间或概率须为有限实数')
+    return float(value)
 
 
 def local_model_path():
@@ -106,6 +114,8 @@ def transcribe(source, meta):
         previous_start = 0
         for segment in iterable:
             try:
+                segment.start = machine_number(segment.start)
+                segment.end = machine_number(segment.end)
                 end = bounded_asr_end(segment.start, segment.end, meta["duration"])
                 if segment.start < previous_start:
                     raise ValueError("转写时间倒序")
@@ -125,9 +135,15 @@ def transcribe(source, meta):
                                     "normalized_end": end})
             if segment.start >= meta["duration"]:
                 continue  # No media exists for this tolerated trailing segment.
-            segments.append({"id": f"s{len(segments)+1:06d}", "start": segment.start,
-                             "end": end, "text": segment.text,
-                             "avg_logprob": segment.avg_logprob, "no_speech_prob": segment.no_speech_prob})
+            row = {"id": f"s{len(segments)+1:06d}", "start": segment.start,
+                   "end": end, "text": segment.text,
+                   "avg_logprob": segment.avg_logprob, "no_speech_prob": segment.no_speech_prob}
+            if OPTIONS['word_timestamps']:
+                # Preserve machine estimates, including anomalies; display checks must not invent timing.
+                row['words'] = [{'word': word.word, 'start': machine_number(word.start),
+                                 'end': machine_number(word.end), 'probability': machine_number(word.probability)}
+                                for word in (segment.words or [])]
+            segments.append(row)
             if len(segments) % 100 == 0:
                 atomic(directory / "progress.json", {"status": "processing", "segments": len(segments),
                        "last_end": segment.end, "elapsed_seconds": time.perf_counter()-asr_started})

@@ -96,13 +96,26 @@ def status(run_id):
     state = read(folder_for(run_id) / 'state.json')
     if state.get('code_bindings') != code_bindings():
         raise ValueError('执行源码、策略或版本变化，请使用新run_id重新验证')
+    require_local_task(local(state['core']['task_record']))
     verify(state['bindings'])
     for entry in state['stages'].values():
         verify(entry['inputs'])
         verify(entry['outputs'])
     if 'rehearsal' in state['stages']:
         rehearsal.check(state['stages']['rehearsal']['result']['package'])
-    return state['report']
+    return state.get('report') or {
+        'run_id': run_id, 'status': 'needs_resume', 'submitted': False,
+        'human_review': 'not_reviewed', 'completed_stages': list(state['stages']),
+        'next_action': '阶段已有记录但没有最终报告；核实没有运行中的进程或锁后，用原请求接续，不删除旧产物'}
+
+
+def require_local_task(task):
+    from run_records import PRE_SUBMISSION, submission_state
+    checked = submission_state(read(task))
+    if checked['status'] in {'UNKNOWN', 'CONFLICT'}:
+        raise ValueError(checked['status'] + '：' + checked['error'])
+    if checked['status'] not in PRE_SUBMISSION or checked['submitted'] is not False:
+        raise ValueError('原任务状态为 ' + checked['status'] + '，不能作为未提交任务自动接续；请核对原记录')
 
 
 def automatic_card(folder, windows, cut):
@@ -149,6 +162,7 @@ def extraction_outputs(result):
 
 def extract_or_resume(task, window):
     """Recover only an exact immutable extraction; partial overlaps still fail."""
+    require_local_task(task)
     card, _, context, source = source_windows.original_context(task)
     for path in sorted((source_windows.WINDOWS / context['task_id']).glob('window-*/extraction.json')):
         item = read(path)
@@ -220,6 +234,7 @@ def _run(request):
                 or not 0 <= window['start'] < window['end'] or window['end'] - window['start'] > 120):
             raise ValueError('每个窗口须为明确start/end，不超过120秒')
     source_windows.original_context(task)
+    require_local_task(task)
     context = read(task)['task_context']
     source = Path(context['source_video']).resolve(strict=True)
     core = {key: request.get(key, default) for key, default in
@@ -256,9 +271,20 @@ def _run(request):
         # An interrupted stage is never recorded as complete; retry creates a
         # fresh attempt output and leaves the earlier attempt untouched.
         attempt = uuid.uuid4().hex[:8]
-        result = action(attempt)
-        outputs = refs(output_paths(result))
-        verify(state['bindings'])
+        try:
+            result = action(attempt)
+            outputs = refs(output_paths(result))
+            verify(state['bindings'])
+        except Exception as error:
+            failure = {'stage': name, 'attempt': attempt, 'error': str(error)}
+            state.setdefault('failures', []).append(failure)
+            state['report'] = {
+                'run_id': run_id, 'status': 'ERROR', 'failed_stage': name,
+                'error': str(error), 'completed_stages': list(state['stages']),
+                'submitted': False, 'human_review': 'not_reviewed',
+                'next_action': '保留失败现场并处理该阶段错误；确认没有运行中的进程后用同一请求接续，已完成且绑定一致的阶段会复用'}
+            save(state_path, state)
+            raise
         state['stages'][name] = {'inputs': input_refs, 'outputs': outputs, 'result': result}
         save(state_path, state)
         return result

@@ -134,8 +134,7 @@ def new_task(args, runtime):
 
 
 def status(runtime):
-    from run_records import PRE_SUBMISSION, PROTECTED
-    uncertain = {'SUBMITTING', 'SUBMIT_UNKNOWN'}
+    from run_records import submission_state
     tasks = []
     for path in sorted((runtime.ROOT / 'outputs').glob('**/run-state.json')):
         item = {'path': str(path), 'status': 'UNKNOWN', 'submitted': None}
@@ -146,23 +145,7 @@ def status(runtime):
             item['recorded_state'] = {k: card[k] for k in ('status', 'submitted') if k in card}
             item.update(task_id=card.get('task_context', {}).get('task_id'),
                         next_action=card.get('next_action'))
-            state, submitted = card.get('status'), card.get('submitted')
-            if not isinstance(state, str) or not state.strip():
-                raise ValueError('状态字段缺失或类型无效')
-            if 'submitted' not in card or (submitted is not None and type(submitted) is not bool):
-                raise ValueError('submitted字段缺失或类型无效，不能推断为未提交')
-            if state in {'UNKNOWN', 'CONFLICT'}:
-                item.update(status=state, error='原记录状态尚未核实')
-            elif state not in PRE_SUBMISSION | PROTECTED | {'REJECTED_ORIGINALITY'}:
-                raise ValueError('无法识别的状态: ' + state)
-            elif submitted is None and state not in uncertain:
-                raise ValueError('当前状态缺少明确的submitted布尔值')
-            elif ((state in PRE_SUBMISSION and submitted is not False)
-                  or (state in PROTECTED - uncertain and submitted is not True)
-                  or (state in uncertain and submitted is not None)):
-                item.update(status='CONFLICT', error='status与submitted互相矛盾，请核对原记录')
-            else:
-                item.update(status=state, submitted=submitted)
+            item.update(submission_state(card))
         except (OSError, ValueError, TypeError, AttributeError) as error:
             item.update(status='UNKNOWN', error=str(error))
         tasks.append(item)

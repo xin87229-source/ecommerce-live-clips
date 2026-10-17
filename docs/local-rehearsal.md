@@ -26,6 +26,10 @@ rc.8对显示进行有限整理：超过一行时按实际字号均衡为两行�
 
 ## 程序执行（由 Codex 完成）
 
+rc.10的新转写包含机器逐词时间。完整原句超过两行时，程序可按经过校验的词时间分页：原句全部文字保留，重点词不跨页，页间静音间隙不填满。每页绑定原段、词索引与原片范围；机器时间标为未核实，不是实际听辨证据。词串不一致、零时长、重叠、越界或缺失时间时拒绝分页，不按字数平均分配时间。
+
+旧转写缓存保留。需要长句分页时重新转写，使用新缓存和新成片版本；机器识别文字和句界可能同时变化，不能把新词时间套用在旧字幕上。新版本重新检查核词、同步和切口。没有逐词时间的旧短句仍可按原规则制作。
+
 先用 `new-task`、`window extract`、`window transcribe-preview` 得到真实任务、抽取记录和未核词转写。剪法沿用 [review-cut 格式](human-review.md)，每段写明作用和具体听审问题；选择完整 ASR 段边界，不能把被剪掉的字仍配在画面上。
 
 在独立工作目录的 `private-context` 中保存演练说明。以下是必填字段，另可加入 `highlight_terms` 词表；路径均由实际运行结果取得：
@@ -49,17 +53,17 @@ rc.8对显示进行有限整理：超过一行时按实际字号均衡为两行�
 }
 ```
 
-`cover_time` 是最终视频内的秒数，程序映回实际原片画面取封面，不取静音尾定格。若字幕原句过长、重叠或被剪口截断，程序拒绝生成；换完整短句，不能借此改写听不清的词。
+`cover_time` 是最终视频内的秒数，程序映回实际原片画面取封面，不取静音尾定格。若字幕过长且没有可用词时间，或字幕重叠、被剪口截断，程序拒绝生成；重新转写或换完整短句，不能借此改写听不清的词。
 
 例如本次原句确实包含“领口”和“牛仔裤”，可加入 `"highlight_terms": ["领口", "牛仔裤"]`。未出现在保留原句中的词会被拒绝。词表、样式、字幕或选段变化都会生成新版本并使旧的对应制作检查失效；旧版保留对比，人审不迁移为新版通过。
 
 ```powershell
-python cli.py --workspace F:/clips-work rehearsal build --spec F:/clips-work/private-context/rehearsal.json --task-id draft-01
-python cli.py --workspace F:/clips-work rehearsal check --package F:/clips-work/outputs/reviews/rehearsals/draft-01
-python tools/serve_review.py --card F:/clips-work/outputs/reviews/rehearsals/draft-01/index.html --port 8765 --nested
+& $Python "$Install/cli.py" --workspace "$Workspace" rehearsal build --spec "$Workspace/private-context/rehearsal.json" --task-id draft-01
+& $Python "$Install/cli.py" --workspace "$Workspace" rehearsal check --package "$Workspace/outputs/reviews/rehearsals/draft-01"
+& $Python "$Install/tools/serve_review.py" --card "$Workspace/outputs/reviews/rehearsals/draft-01/index.html" --port 8765 --nested
 ```
 
-最后一条仅在本机启动只读预览，允许访问这个交付目录内的子审片卡，禁止目录列表、工作区外路径和写入请求。浏览器打开显示的本机地址。不要把服务根目录设为整个工作区或素材目录。
+`$Python`、`$Install`、`$Workspace` 沿用[首次安装](dependencies.md)中的真实路径，不依赖全局Python或当前所在目录。最后一条仅在本机启动只读预览，允许访问这个交付目录内的子审片卡，禁止目录列表、工作区外路径和写入请求。浏览器打开显示的本机地址。不要把服务根目录设为整个工作区或素材目录。
 
 ## 一包里应有什么
 
