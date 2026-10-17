@@ -4,7 +4,9 @@
 
 ## 1. 取得完整项目
 
-使用维护者实际提供并确认可分发的完整试用包，或在公开地址正式建立后下载完整仓库。当前不在本文虚构仓库、下载页或反馈 URL。解压到自己有写入权限的新目录，保留 `.agents` 隐藏目录；不能只下载 `SKILL.md`，也不能把私人迁移包当试用包。
+从公开仓库 [xin87229-source/ecommerce-live-clips](https://github.com/xin87229-source/ecommerce-live-clips) 选择 **Code → Download ZIP**，或[下载 main 完整源码 ZIP](https://github.com/xin87229-source/ecommerce-live-clips/archive/refs/heads/main.zip)。也可以使用维护者提供、已核对版本和清单的完整候选包。解压到自己有写入权限的新目录，保留 `.agents` 隐藏目录；不能只下载 `SKILL.md`，也不能把私人迁移包当试用包。
+
+GitHub 的 main ZIP 随源码更新，不是固定版本的 GitHub Release。首次试用先记录仓库提交号与 `VERSION`；维护者提供的候选包还应核对其 `SOURCE-MANIFEST.json` 和 ZIP SHA-256。下载后打开包含 `cli.py` 的实际目录：GitHub ZIP 通常多包一层 `ecommerce-live-clips-main`，不要把其上一级空目录当安装目录。当前正式发行与验证进度见 [验证状态](release-status.md)。
 
 至少确认以下文件存在：`cli.py`、`requirements.txt`、`.agents/skills/ecommerce-live-clips/SKILL.md`、`pipeline/`、`presets/`、`docs/`、`tests/` 和 `THIRD_PARTY_NOTICES.md`。有候选清单与 SHA-256 时先核对；解压后源码目录、原片目录、商家工作区分别保存。候选打包方法见 [发布准备](release-preparation.md)。
 
@@ -62,6 +64,8 @@ if ($LASTEXITCODE -ne 0) { throw '依赖安装失败，请保留完整错误，�
 | Pillow | 12.3.0 |
 
 这份清单是本机版本基线，未锁定全部传递依赖和下载文件哈希。尤其本机 faster-whisper 来自固定提交 `ed9a06cd89a93e47838f564998a6c09b655d7f43`；只看到 PyPI 安装后的相同版本号，不能证明字节相同。外部安装结果以自己保存的 `pip freeze`、导入检查和短素材实测为准；任何版本不可取得时，记录失败，不自行删掉版本限制后声称复现成功。
+
+2026-10-18又在同一电脑新建了空虚拟环境，从软件包源按该requirements实际安装，并通过依赖检查、导入、中文媒体制作、本地模型加载和20秒真实原窗转写。该次使用PyPI发行版的faster-whisper，未复制旧虚拟环境。FFmpeg、模型文件和系统字体仍复用本机资源，因此不能当作新电脑安装或全部资源重新下载成功。
 
 ## 3. 取得 FFmpeg 与 FFprobe
 

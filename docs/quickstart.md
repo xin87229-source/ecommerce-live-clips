@@ -131,6 +131,8 @@ $env:PYTHONUTF8 = '1'
 
 让 AI 读取对应 `run-state.json`、本次产物和真实反馈，从最后成功阶段接续。不要再次 `init` 覆盖旧配置，不要通过改任务号回避 `UNKNOWN`。源文件、选段、顺序、速度或字幕变动后，重新核对受影响证据，修订使用新输出目录。
 
+若通过一次委托入口运行，让 Codex 使用实际 `run_id` 查询 `auto status <run_id>`，从返回的 `current_artifact` 打开本次完整包；它区分待审演练和正式交付，不能只凭目录名字判断。按[一次委托接续](one-click.md)复用原请求，输入或产物变化时先处理失效提示，不重新初始化工作区。
+
 | 表现 | 下一步 |
 | --- | --- |
 | 找不到 Python，或依赖装了仍提示缺包 | 用 `& $Python -c "import sys; print(sys.executable)"` 核对实际解释器；再对同一个 `$Python` 执行 `-m pip check`。 |

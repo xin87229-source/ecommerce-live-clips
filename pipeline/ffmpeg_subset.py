@@ -116,10 +116,12 @@ def cut(source, segments, meta, vf, destination):
     # Place video on the selected timeline and join audio independently, without stretching either.
     filters.append("".join(video_labels) + f"interleave=nb_inputs={len(segments)}:duration=longest[video]")
     filters.append("".join(audio_labels) + f"concat=n={len(segments)}:v=0:a=1[audio]")
-    filters.append("[video]" + ((vf + ",") if vf else "") + f"fps={meta['fps']:.6f}:start_time=0,format=yuv420p[out]")
+    # Convert samples before canvas padding, including the already-vertical/no-resize path.
+    filters.append("[video]scale=in_range=auto:out_range=tv," + ((vf + ",") if vf else "")
+                   + f"fps={meta['fps']:.6f}:start_time=0,format=yuv420p[out]")
     return args + ["-filter_complex", ";".join(filters), "-map", "[out]", "-map", "[audio]",
                    "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", "libx264",
-                   "-preset", "fast", "-crf", "18", "-c:a", "aac", "-b:a", "192k",
+                   "-preset", "fast", "-crf", "18", "-color_range", "tv", "-c:a", "aac", "-b:a", "192k",
                    "-ar", "48000", "-movflags", "+faststart", str(destination)]
 
 

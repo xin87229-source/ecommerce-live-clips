@@ -12,6 +12,7 @@ from runtime import ROOT
 import source_windows
 import review_cut
 import review_card
+import rehearsal
 
 
 def read(path):
@@ -99,6 +100,8 @@ def status(run_id):
     for entry in state['stages'].values():
         verify(entry['inputs'])
         verify(entry['outputs'])
+    if 'rehearsal' in state['stages']:
+        rehearsal.check(state['stages']['rehearsal']['result']['package'])
     return state['report']
 
 
@@ -181,6 +184,18 @@ def validate_production_context(parent, child):
         raise ValueError('正式制作必须绑定同一原片、商品身份与参考图证据')
 
 
+def validate_cut_binding(provided, task, allowed):
+    if Path(provided['task_record']).resolve() != task:
+        raise ValueError('cut_spec必须绑定当前原片任务')
+    for clip in provided['clips']:
+        visual = clip.get('visual')
+        if visual is not None and not isinstance(visual, dict):
+            raise ValueError('visual须为对象或null；null使用原声对应画面')
+        if (str(Path(clip['extraction']).resolve()) not in allowed or
+                (visual is not None and str(Path(visual.get('extraction', clip['extraction'])).resolve()) not in allowed)):
+            raise ValueError('剪法必须来自本次真实抽取窗口')
+
+
 def run(request):
     if not isinstance(request, dict):
         raise ValueError('request必须为对象')
@@ -192,7 +207,7 @@ def run(request):
 
 def _run(request):
     if not isinstance(request, dict) or set(request) - {
-            'run_id', 'task_record', 'windows', 'category', 'style', 'cut_spec', 'review_spec', 'production'}:
+            'run_id', 'task_record', 'windows', 'category', 'style', 'cut_spec', 'review_spec', 'rehearsal_spec', 'production'}:
         raise ValueError('request含未知字段；不接受命令、shell或任意执行步骤')
     run_id = identifier(request['run_id'])
     task = local(request['task_record'])
@@ -228,6 +243,8 @@ def _run(request):
         raise ValueError('已执行cut_spec不能从接续请求删除，请使用新run_id')
     if 'combine' in state['stages'] and not request.get('production'):
         raise ValueError('已执行production不能从接续请求删除，请使用新run_id')
+    if 'rehearsal' in state['stages'] and not request.get('rehearsal_spec'):
+        raise ValueError('已执行rehearsal_spec不能从接续请求删除，请使用新run_id')
 
     def stage(name, inputs, action, output_paths):
         input_refs = refs(inputs) if inputs else {}
@@ -259,18 +276,13 @@ def _run(request):
     report = {'run_id': run_id, 'status': 'needs_agent_decision', 'windows': extracted,
               'strategy': strategy_for(request.get('category', 'other'), request.get('style', 'auto')),
               'submitted': False, 'human_review': 'not_reviewed',
-              'next_action': 'Codex查看真实帧与原速片段，选择剪法并填写cut_spec；运营无需填写JSON'}
+              'next_action': 'Codex查看真实帧与原速片段，填写rehearsal_spec生成完整待审包，或用cut_spec先比较粗剪；运营无需填写JSON'}
+    allowed = {str(Path(item['extraction']).resolve()) for item in extracted}
     if request.get('cut_spec'):
         spec = local(request['cut_spec'])
         review_cut.plan(spec)
-        allowed = {str(Path(item['extraction']).resolve()) for item in extracted}
         provided = read(spec)
-        if Path(provided['task_record']).resolve() != task:
-            raise ValueError('cut_spec必须绑定当前原片任务')
-        for clip in provided['clips']:
-            if (str(Path(clip['extraction']).resolve()) not in allowed or
-                    ('visual' in clip and str(Path(clip['visual'].get('extraction', clip['extraction'])).resolve()) not in allowed)):
-                raise ValueError('剪法必须来自本次真实抽取窗口')
+        validate_cut_binding(provided, task, allowed)
         cut = stage('cut', [spec], lambda attempt: review_cut.run(spec, run_id + '-' + attempt),
                     lambda r: [r['output']])
         card_spec = local(request['review_spec']) if request.get('review_spec') else automatic_card(folder, extracted, cut)
@@ -280,6 +292,25 @@ def _run(request):
                      lambda r: [Path(r['index']).parent])
         report.update(status='needs_content_review', cut=cut, review_card=card,
                       next_action='请实际听看审核卡；粗剪可播放，但原话、同款和最终内容仍待真实审核，不是正式成片交付')
+    if request.get('rehearsal_spec'):
+        spec = local(request['rehearsal_spec'])
+        provided = read(spec)
+        cut_spec = local(provided['cut_spec'])
+        validate_cut_binding(read(cut_spec), task, allowed)
+        if request.get('cut_spec') and cut_spec != local(request['cut_spec']):
+            raise ValueError('rehearsal_spec须使用当前cut_spec；不同剪法请用新run_id')
+        asrs = provided['asr_previews']
+        allowed_asrs = {str(Path(item['asr_preview']).resolve()) for item in extracted}
+        if not isinstance(asrs, list) or not asrs or any(str(local(path)) not in allowed_asrs for path in asrs):
+            raise ValueError('演练ASR必须来自本次实际转写窗口')
+        result = stage('rehearsal', [spec, cut_spec, *asrs],
+                       lambda attempt: rehearsal.build(spec, run_id + '-r-' + attempt),
+                       lambda r: [r['package']])
+        package = Path(result['package'])
+        report.update(status='needs_content_review', rehearsal=result,
+                      current_artifact={'kind': 'unreviewed_rehearsal', 'package': str(package),
+                                        'index': str(package / 'index.html'), 'video': str(package / 'draft-video.mp4')},
+                      next_action='完整待审包和本地发帖演练已生成；打开current_artifact核对视频、字幕、封面和原速问题。原话、同款与最终内容仍待真实审核，未上传或提交')
     if request.get('production'):
         formal_task = request['production'].get('task_record') if isinstance(request['production'], dict) else None
         if formal_task:
@@ -349,6 +380,9 @@ def production(spec, stage, run_id, report):
         return {'path': str(destination), 'info': info}
     finished = stage('package-finish', [draft], finish, lambda r: [r['path']])
     report.update(status='completed_unreviewed', delivery=finished,
+                  current_artifact={'kind': 'formal_local_delivery_unreviewed', 'package': finished['path'],
+                                    'index': str(Path(finished['path']) / 'publish-preview.md'),
+                                    'video': str(Path(finished['path']) / 'video.mp4')},
                   next_action='正式本地交付已生成；请连续观看、实际试听并完成内容验收，未发布')
     return report
 
