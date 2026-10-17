@@ -1,0 +1,23 @@
+{
+  "font_preferences": [
+    "Source Han Sans SC",
+    "Noto Sans CJK SC",
+    "Noto Sans SC",
+    "Microsoft YaHei"
+  ],
+  "font_size": 66,
+  "highlight_font_size": 92,
+  "highlight_bold": true,
+  "position_y_percent": 72,
+  "max_lines": 2,
+  "max_single_segment_seconds": 5,
+  "outline": 4,
+  "shadow": 1,
+  "primary_color": "#FFFFFF",
+  "outline_color": "#24201E",
+  "highlight_color": "#FFD75A",
+  "animation": "emphasis_rise",
+  "fade_ms": 150,
+  "keywords": [],
+  "max_highlights": 1
+}

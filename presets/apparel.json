@@ -1,0 +1,9 @@
+{
+  "name": "apparel",
+  "min_source_seconds": 20,
+  "max_duration_seconds": 70,
+  "min_speed": 1.0,
+  "max_speed": 1.5,
+  "size": [1080, 1920],
+  "fps": 30
+}

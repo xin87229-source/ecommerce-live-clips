@@ -1,0 +1,9 @@
+# Tested local baseline; install into a dedicated virtual environment.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+av==18.1.0
+onnxruntime==1.29.0
+tokenizers==0.23.2
+huggingface-hub==1.30.0
+numpy==2.5.3
+Pillow==12.3.0
