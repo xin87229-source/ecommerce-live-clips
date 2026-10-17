@@ -1,5 +1,6 @@
 """Resumption must execute work, preserve evidence, and reject stale reuse."""
 import importlib
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -185,6 +186,8 @@ class AutoWorkflowTests(unittest.TestCase):
             report = api.production(spec, stage, 'unit', {})
         self.assertEqual(calls, ['combine', 'subtitle', 'package-prepare', 'package-finish'])
         self.assertEqual(report['status'], 'completed_unreviewed')
+        self.assertEqual(report['current_artifact']['kind'], 'formal_local_delivery_unreviewed')
+        self.assertEqual(report['current_artifact']['video'], str(Path(report['delivery']['path']) / 'video.mp4'))
         self.assertEqual(subtitle_call.call_args.args[0], composition)
         self.assertEqual(prepare_call.call_args.args[0], subtitled)
         self.assertNotEqual(finish_call.call_args.args[0], prepared)
@@ -193,3 +196,141 @@ class AutoWorkflowTests(unittest.TestCase):
         self.assertEqual(Path(copied_frame['path']).parent, new_package / 'frames')
         self.assertEqual(copied_frame['sha256'], api.digest(frame))
         self.assertEqual(combine_call.call_args.args[4], Path(spec['source_review']))
+
+    def rehearsal_fixture(self):
+        """Keep state/files real; replace only expensive media operations."""
+        api = self.api()
+        rehearsal = importlib.reload(importlib.import_module('rehearsal'))
+        folder = self.root / 'private-context/window'
+        folder.mkdir(parents=True)
+        extraction, preview = folder / 'extraction.json', folder / 'asr.json'
+        extraction.write_text('{}')
+        preview.write_text('{}')
+        cut = self.root / 'private-context/cut.json'
+        cut.write_text(json.dumps({'task_record': str(self.card), 'clips': [
+            {'extraction': str(extraction), 'window_range': [0, 1]}]}))
+        spec = self.root / 'private-context/rehearsal.json'
+        spec.write_text(json.dumps({'cut_spec': str(cut), 'asr_previews': [str(preview)]}))
+        request = dict(self.request, rehearsal_spec=str(spec))
+        calls = []
+
+        def build(path, task_id):
+            package = self.root / 'outputs/reviews/rehearsals' / task_id
+            package.mkdir(parents=True, exist_ok=False)
+            for name in ('index.html', 'draft-video.mp4', 'simulation.json'):
+                (package / name).write_text('synthetic media boundary fixture')
+            calls.append(package)
+            return {'package': str(package), 'status': 'SIMULATED_NOT_SUBMITTED',
+                    'uploaded': False, 'submitted': False, 'platform_ui_verified': False}
+
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(api.source_windows, 'original_context', return_value=(self.card, {}, {'task_id': 'task'}, self.source)))
+        stack.enter_context(patch.object(api.source_windows, 'extract', return_value={'extraction': str(extraction)}))
+        stack.enter_context(patch.object(api.source_windows, 'transcribe_preview', return_value={'preview_path': str(preview)}))
+        stack.enter_context(patch.object(rehearsal, 'build', side_effect=build))
+        checked = stack.enter_context(patch.object(rehearsal, 'check', return_value={'status': 'SIMULATED_NOT_SUBMITTED'}))
+        return api, rehearsal, request, spec, cut, preview, calls, checked
+
+    def test_rehearsal_runs_resumes_and_exposes_pending_artifact(self):
+        api, _, request, _, _, _, calls, checked = self.rehearsal_fixture()
+        original = self.card.read_bytes()
+        report = api.run(request)
+        self.assertEqual(report['status'], 'needs_content_review')
+        self.assertEqual(report['current_artifact']['kind'], 'unreviewed_rehearsal')
+        self.assertTrue(Path(report['current_artifact']['index']).is_file())
+        self.assertEqual(report['rehearsal']['status'], 'SIMULATED_NOT_SUBMITTED')
+        self.assertFalse(report['submitted'])
+        self.assertEqual(report['human_review'], 'not_reviewed')
+        self.assertEqual(api.run(request), report)
+        self.assertEqual(api.status('unit'), report)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(checked.called)
+        self.assertEqual(self.card.read_bytes(), original)
+
+    def test_rehearsal_missing_spec_fails_and_keeps_state_recoverable(self):
+        api, _, request, spec, _, _, calls, _ = self.rehearsal_fixture()
+        spec.unlink()
+        with self.assertRaises(FileNotFoundError):
+            api.run(request)
+        self.assertFalse(calls)
+        self.assertNotIn('rehearsal', api.read(api.folder_for('unit') / 'state.json')['stages'])
+
+    def test_rehearsal_changed_inputs_or_removed_request_do_not_reuse(self):
+        api, _, request, spec, cut, _, calls, _ = self.rehearsal_fixture()
+        api.run(request)
+        with self.assertRaisesRegex(ValueError, 'rehearsal_spec'):
+            api.run(self.request)
+        original = cut.read_bytes()
+        cut.write_text('{"changed":true}')
+        with self.assertRaisesRegex(ValueError, '变化|哈希'):
+            api.status('unit')
+        cut.write_bytes(original)
+        spec.write_text(spec.read_text() + '\n')
+        with self.assertRaisesRegex(ValueError, '变化|哈希'):
+            api.run(request)
+        self.assertEqual(len(calls), 1)
+
+    def test_rehearsal_rejects_other_task_window_or_asr_before_build(self):
+        api, _, request, spec, cut, preview, calls, _ = self.rehearsal_fixture()
+        original_cut = json.loads(cut.read_text())
+        original_spec = json.loads(spec.read_text())
+        outside = self.root / 'private-context/other.json'
+        outside.write_text('{}')
+        for changed_cut, changed_spec in [
+                (dict(original_cut, task_record=str(outside)), original_spec),
+                (dict(original_cut, clips=[{'extraction': str(outside)}]), original_spec),
+                (original_cut, dict(original_spec, asr_previews=[str(outside)]))]:
+            cut.write_text(json.dumps(changed_cut))
+            spec.write_text(json.dumps(changed_spec))
+            with self.assertRaisesRegex(ValueError, '本次|当前'):
+                api.run(request)
+        self.assertFalse(calls)
+
+    def test_rehearsal_same_name_collision_preserves_output_then_retries(self):
+        api, _, request, _, _, _, calls, _ = self.rehearsal_fixture()
+        # First run caches only extraction/ASR, leaving rehearsal unexecuted.
+        api.run(self.request)
+        old = self.root / 'outputs/reviews/rehearsals/unit-r-fixed000'
+        old.mkdir(parents=True)
+        (old / 'keep.txt').write_text('keep old output')
+        class FixedId:
+            hex = 'fixed000rest'
+        with patch.object(api.uuid, 'uuid4', return_value=FixedId()):
+            with self.assertRaises(FileExistsError):
+                api.run(request)
+        self.assertEqual((old / 'keep.txt').read_text(), 'keep old output')
+        self.assertNotIn('rehearsal', api.read(api.folder_for('unit') / 'state.json')['stages'])
+        report = api.run(request)
+        self.assertEqual(report['status'], 'needs_content_review')
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(Path(report['current_artifact']['package']), old)
+
+    def test_rehearsal_status_runs_existing_package_integrity_check(self):
+        api, _, request, _, _, _, _, checked = self.rehearsal_fixture()
+        api.run(request)
+        checked.side_effect = ValueError('演练状态矛盾，不能标记发布或审核通过')
+        with self.assertRaisesRegex(ValueError, '演练状态矛盾'):
+            api.status('unit')
+
+    def test_rehearsal_explicit_null_visual_keeps_default_source_picture(self):
+        api, _, request, _, cut, _, calls, _ = self.rehearsal_fixture()
+        provided = json.loads(cut.read_text())
+        provided['clips'][0]['visual'] = None
+        cut.write_text(json.dumps(provided))
+        report = api.run(request)
+        self.assertEqual(report['status'], 'needs_content_review')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(report['human_review'], 'not_reviewed')
+        self.assertEqual(api.status('unit'), report)
+
+    def test_rehearsal_non_object_visual_has_explicit_validation_error(self):
+        api, _, request, _, cut, _, calls, _ = self.rehearsal_fixture()
+        provided = json.loads(cut.read_text())
+        for visual in ([], 'invalid', True):
+            with self.subTest(visual=visual):
+                provided['clips'][0]['visual'] = visual
+                cut.write_text(json.dumps(provided))
+                with self.assertRaisesRegex(ValueError, 'visual.*对象'):
+                    api.run(request)
+        self.assertFalse(calls)

@@ -179,32 +179,54 @@ def wrap(raw, font, width=960, highlights=(), highlight_font=None, bold=False, b
             units.append(word)
             end = stop
         units.extend(raw[end:])
-        lines, line = [], ''
-        safe_width = width
-        for unit in units:
-            measure = lambda value: subtitle.emphasis_width(value, highlights, 2, font, highlight_font, bold)
-            if line and measure(line + unit) > safe_width:
-                lines.append(line)
-                line = ''
-            line += unit
-            if measure(line) > safe_width:
-                raise ValueError('重点词按放大粗体字号超出安全宽度，请减少重点词或换短句')
-        if line:
-            lines.append(line)
-        if len(lines) > 2:
-            raise ValueError('完整ASR句放大重点后超过两行安全宽度，请换较短完整句')
-        return lines
-    lines, line = [], ''
-    for char in raw:
-        if font.getlength(line + char) > width and line:
-            lines.append(line)
-            line = ''
-        line += char
-    if line:
-        lines.append(line)
-    if not lines or len(lines) > 2 or any(font.getlength(line) > width for line in lines):
-        raise ValueError('完整ASR句超过两行安全宽度；请换用较短完整句，不可猜改原文')
-    return lines
+        measure = lambda value: subtitle.emphasis_width(value, highlights, 2, font, highlight_font, bold)
+    else:
+        units, measure = list(raw), font.getlength
+    if raw and measure(raw) <= width:
+        return [raw]
+    choices = []
+    for at in range(1, len(units)):
+        left, right = ''.join(units[:at]), ''.join(units[at:])
+        a, b = measure(left), measure(right)
+        if a <= width and b <= width and left.strip() and right.strip():
+            # Balance two lines instead of leaving one or two orphan characters.
+            # No dictionary or transcription correction is implied by this break.
+            penalty = width if right[0] in '，。！？、；：,.!?;:' or left[-1] in '（《“「([' else 0
+            choices.append((abs(a-b)+penalty, left, right))
+    if not choices:
+        raise ValueError('完整ASR句或重点词超过两行安全宽度；请换较短完整句，不可猜改原文')
+    _, left, right = min(choices, key=lambda item: item[0])
+    return [left, right]
+
+
+def readable_cues(original, fit):
+    """Group short machine segments, preserving every original and its own range."""
+    groups = []
+    for cue in original:
+        current = dict(cue, source_cues=[copy.deepcopy(cue)])
+        if groups:
+            previous = groups[-1]
+            last = previous['source_cues'][-1]
+            adjacent = (previous['clip_id'] == cue['clip_id']
+                        and previous['extraction'] == cue['extraction']
+                        and abs(cue['start']-previous['end']) <= .08
+                        and abs(cue['source_range'][0]-last['source_range'][1]) <= .08
+                        and abs(cue['window_range'][0]-last['window_range'][1]) <= .08)
+            short = min(previous['end']-previous['start'], cue['end']-cue['start']) < 1.2
+            if adjacent and short and cue['end']-previous['start'] <= 4.5:
+                joined = previous['text'] + ' ' + cue['text']
+                try:
+                    fit(joined)
+                except ValueError:
+                    pass
+                else:
+                    previous.update(text=joined, end=cue['end'],
+                                    source_range=[previous['source_range'][0], cue['source_range'][1]],
+                                    window_range=[previous['window_range'][0], cue['window_range'][1]])
+                    previous['source_cues'].append(copy.deepcopy(cue))
+                    continue
+        groups.append(current)
+    return groups
 
 
 def escaped_ass(value):
@@ -215,12 +237,17 @@ def escaped_ass(value):
 
 
 def subtitles(record, style, family, font, highlight_font=None):
+    def fit(raw):
+        hits = subtitle.highlight_spans(raw, record.get('highlight_terms', []), style['max_highlights'])
+        terms = list(dict.fromkeys(hit[2] for hit in hits))
+        return wrap(raw, font, highlights=terms, highlight_font=highlight_font,
+                    bold=style.get('highlight_bold', False), border=2*(style['outline']+style['shadow']))
+
     cues = []
-    for cue in record['cues']:
+    for cue in readable_cues(record['cues'], fit):
         hits = subtitle.highlight_spans(cue['text'], record.get('highlight_terms', []), style['max_highlights'])
         terms = list(dict.fromkeys(hit[2] for hit in hits))
-        lines = wrap(cue['text'], font, highlights=terms, highlight_font=highlight_font,
-                     bold=style.get('highlight_bold', False), border=2*(style['outline']+style['shadow']))
+        lines = fit(cue['text'])
         cues.append(dict(cue, lines=lines, highlights=terms, highlight_occurrences=len(hits)))
     _, srt, _ = subtitle.subtitle_files(cues, style, family)
     safe = [dict(cue, lines=[escaped_ass(line) for line in cue['lines']]) for cue in cues]
@@ -228,6 +255,25 @@ def subtitles(record, style, family, font, highlight_font=None):
     ass += (f"Dialogue: 10,0:00:00.00,{subtitle.stamp(record['cut']['duration_seconds'], True)},Default,,0,0,0,,"
             r'{\an8\pos(540,80)\fs38\c&H00D6FF&\bord2}' + WATERMARK + '\n')
     return ass, srt, cues
+
+
+def readability(cues, original_count):
+    short, dense = [], []
+    for index, cue in enumerate(cues, 1):
+        seconds = cue['end']-cue['start']
+        cps = len(re.sub(r'\s', '', cue['text']))/seconds
+        entry = {'cue': index, 'video_range': [cue['start'], cue['end']],
+                 'source_segment_ids': [item['id'] for item in cue['source_cues']],
+                 'seconds': round(seconds, 3), 'characters_per_second': round(cps, 2)}
+        if seconds < 1.2:
+            short.append(entry)
+        if cps > 12:
+            dense.append(entry)
+    return {'original_segment_count': original_count, 'display_cue_count': len(cues),
+            'short_cues': short, 'dense_cues': dense,
+            'grouping': 'same_clip_contiguous_source_only_max_4.5_seconds',
+            'original_texts_preserved': True,
+            'note': '仅阅读风险提示；1.2秒/每秒12字为本模板检查阈值，不证明口播同步、语义或听审通过。'}
 
 
 def cards(record, output, video):
@@ -266,6 +312,11 @@ def page(record, links):
     timeline = ''.join(f'<tr><td>{esc(part["purpose"])}</td><td>{label(part["video_range"][0])}–{label(part["video_range"][1])}</td>'
                        f'<td>{label(part["audio"]["source_range"][0])}–{label(part["audio"]["source_range"][1])}</td>'
                        f'<td>{part["speed"]} 倍</td><td>{esc(part["visual_note"])}</td></tr>' for part in record['cut']['segments'])
+    reading = record.get('subtitle_readability')
+    reading_note = (f'<p>字幕阅读检查：{reading["original_segment_count"]} 个机器原段整理为 '
+                    f'{reading["display_cue_count"]} 条显示字幕；短停留提醒 {len(reading["short_cues"])} 条，'
+                    f'高密度提醒 {len(reading["dense_cues"])} 条。原文字段与各自来源保留；分组仅改善显示，不代表核词或同步通过。</p>'
+                    if reading else '')
     return f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; connect-src 'none'; form-action 'none'">
 <title>{esc(spec['title'])}｜本地待审演练</title><style>body{{max-width:1000px;margin:32px auto;padding:0 20px;background:#f6f4ef;color:#232323;font:17px/1.6 system-ui}}video{{width:min(100%,340px);max-height:70vh;background:#000}}img{{width:min(100%,280px)}}section{{padding:24px;background:white;margin:20px 0;border-radius:12px}}strong{{color:#915d00}}a{{color:#075a87}}pre{{white-space:pre-wrap}}.media{{display:flex;gap:24px;flex-wrap:wrap}}table{{border-collapse:collapse;width:100%;font-size:14px}}th,td{{text-align:left;padding:10px;border-bottom:1px solid #ddd}}.scroll{{overflow:auto}}</style>
@@ -275,7 +326,7 @@ def page(record, links):
 <p>这里只验证本地素材与字段齐备。没有真实平台登录、上传、挂车、排期或提交；抖音真实后台交互未验证。</p>
 <p><a href="draft-subtitle.srt">机器字幕 SRT</a> · <a href="draft-subtitle.ass">机器字幕 ASS</a> · <a href="cover-4x3.jpg">横封面</a> · <a href="simulation.json">文件检查记录</a></p></section>
 <section><h2>选段作用与原片时间</h2><div class="scroll"><table><thead><tr><th>作用</th><th>成片位置</th><th>原片原声区间</th><th>速度</th><th>画面关系</th></tr></thead><tbody>{timeline}</tbody></table></div><p>尾部定格 {record['cut']['end_hold']['seconds']} 秒；字幕不延伸到静音尾部。<a href="rehearsal.json">完整来源、窗口与版本绑定</a></p></section>
-<section><h2>分项质量</h2><p>媒体解码、帧率、字幕文件、中文字体、封面排版：技术检查通过。原话核词、同款、连续画面、原声听感、最终用户验收：均待真实审核。</p><p><a href="quality.md">可读质量清单</a> · <a href="quality.json">技术结果与内容状态</a></p></section>
+<section><h2>分项质量</h2><p>媒体解码、帧率、字幕文件、中文字体、封面排版：技术检查通过。原话核词、同款、连续画面、原声听感、最终用户验收：均待真实审核。</p>{reading_note}<p><a href="quality.md">可读质量清单</a> · <a href="quality.json">技术结果与内容状态</a></p></section>
 <section><h2>逐段核实</h2><ul>{questions}</ul><p>所有内容审核均为未通过审核；自然语言反馈不自动变成审批。</p></section></html>'''
 
 
@@ -301,6 +352,7 @@ def build(spec_path, task_id):
     if record['highlight_terms']:
         highlight_font, highlight_path, highlight_font_mode = subtitle.emphasis_font(family, font_path, 68)
     ass, srt, cues = subtitles(record, style, family, font, highlight_font)
+    record['subtitle_readability'] = readability(cues, len(record['cues']))
     for path in (Path(__file__), INSTALL_ROOT / 'pipeline/review_cut.py', INSTALL_ROOT / 'pipeline/subtitle.py',
                  INSTALL_ROOT / 'pipeline/cover_layout.py', subtitle.STYLE, INSTALL_ROOT / 'pipeline/cover_config.json',
                  ROOT / 'config.json', font_path, highlight_path):
@@ -356,6 +408,7 @@ def build(spec_path, task_id):
                                 'highlight_font_mode': highlight_font_mode,
                                 'width_check': '实际字号字体测宽，粗体额外留12%文字宽度或字号（取大值）外扩余量；重点词不拆行',
                                 'meaning': '仅视觉强调，不代表词句或商品事实已核实'},
+                   'readability': record['subtitle_readability'],
                    'copy': 'draft_not_fact_checked', 'platform_ui_verified': False, 'submitted': False}
         atomic(output / 'quality.json', quality)
         atomic(output / 'quality.md', '# 待审演练质量清单\n\n'

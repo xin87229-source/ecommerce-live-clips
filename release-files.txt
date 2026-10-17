@@ -66,6 +66,7 @@ tests/test_final_review_fixes.py
 tests/test_review_card.py
 tests/test_review_cut.py
 tests/test_rehearsal.py
+tests/test_rehearsal_readability.py
 tests/test_runtime_core.py
 tests/test_serve_review.py
 tests/test_source_windows.py

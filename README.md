@@ -4,6 +4,8 @@
 
 采用完整仓库＋项目内 Skill 入口：下载完整项目并在 Codex 中打开，让 AI 读取 [Skill 入口](.agents/skills/ecommerce-live-clips/SKILL.md)。不能只复制一个 SKILL.md。当前版本见 [VERSION](VERSION)，已验证内容和待验收项统一见 [验证状态](docs/release-status.md)；新候选按源码清单指纹区分，旧 ZIP 不代表当前代码。
 
+从[公开 GitHub 仓库](https://github.com/xin87229-source/ecommerce-live-clips)选择 Code → Download ZIP，解压后打开包含 `cli.py` 的目录，再按[首次安装](docs/dependencies.md)配置本机环境。问题可通过 [GitHub Issues](https://github.com/xin87229-source/ecommerce-live-clips/issues)反馈版本、当前阶段和脱敏报错；不要附商家原片、账号信息或私人配置。main 源码下载与正式 Release 分开记录。
+
 当前提供 `basic`（中性商品讲解）和 `apparel`（女装）两套预设。默认成片上限 70 秒，1080×1920、30 fps CFR，保留原声；速度限 1.0～1.5 倍。`apparel` 要求已确认同款原片区间并集至少 20 秒，`basic` 不设这个数字门槛。两者都要有完整表达和商品证据。
 
 rc.5 增加 [一次委托制作入口](docs/one-click.md) 与 [按商品选择剪法](docs/apparel-editing.md)：上衣、裤装、连衣裙、半身裙、外套、套装及未知类别共用流程，风格可保留用户原词。Codex负责实际查看、语义选择和内部决策文件，程序执行抽窗、转写、剪辑、审核卡与具备证据后的正式制作，支持核验后的接续。策略支持不等于全类目实测；一键制作不自动授予同款、核词或最终验收通过。
