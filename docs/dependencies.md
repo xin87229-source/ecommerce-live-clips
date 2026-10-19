@@ -108,12 +108,17 @@ Get-ChildItem -LiteralPath $Model
 
 没有合适字体时，可从 [Noto CJK 官方字体仓库](https://github.com/notofonts/noto-cjk) 的 [Sans 下载说明](https://github.com/notofonts/noto-cjk/blob/main/Sans/README.md) 取得简体中文静态 OTF，解压到字体目录，例如 `NotoSansCJKsc-Regular.otf`。保留其 [SIL Open Font License 1.1](https://github.com/notofonts/noto-cjk/blob/main/Sans/LICENSE)。这是可获取的替代字体，不代表本项目已验证该字体在所有机器上的渲染结果。
 
+可复现的已测文件：[NotoSansCJKsc-Regular.otf](https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf)，来自官方仓库固定提交 `f8d157532fbfaeda587e826d4cd5b21a49186f7c`；同时保存该提交的[许可文件](https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE)。字体 SHA-256 为 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`，大小 16,437,364 字节。下载到自己的字体目录即可，无需系统安装；程序仍不自动下载。
+
 ```powershell
 $Font = 'D:\eclip\fonts\NotoSansCJKsc-Regular.otf'
+Get-FileHash -LiteralPath $Font -Algorithm SHA256
 & $Python -c "import sys; from PIL import ImageFont; f=ImageFont.truetype(sys.argv[1],42); print(f.getname())" "$Font"
 ```
 
 这只验证字体可读取。还要在短片中看字幕是否为汉字、是否缺字或遮挡商品；标题、价格、尺码等敏感内容必须核对原话。项目不自动安装字体到系统。
+
+2026-10-20 已在同一 Windows 电脑的新工作区用上述文件实际生成4秒中文技术样例，检查重点词66→92字号、黄色和加粗效果；日志确认普通与加粗均使用Noto，Regular字体的加粗由渲染器合成。另用此字体通过13项交付测试，包含合成素材完整制作。复用既有清洁虚拟环境与FFmpeg，未重新安装模型；不算新电脑安装、真实口播核词、所有字形或商家素材版式验收。更换字体后应重新检查本次字幕换行及商品遮挡。
 
 ## 6. 建工作区、检查并试跑
 
