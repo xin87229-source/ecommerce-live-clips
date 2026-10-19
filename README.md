@@ -8,6 +8,8 @@
 
 当前仍为预发布候选。自测记录不替代新电脑、外部运营或真实业务验收；协助服务的具体范围见服务页，内容事实与最终成片仍需实际核对。
 
+已完成真实完整内容确认的演练稿，可按[已审稿交付](docs/reviewed-delivery.md)使用 `delivery build/check`：从原片窗口重新生成，保留已核准原声和字幕，只去除待审标记并补齐正式封面文案。审核范围和新画面检查分别记录，仍不执行平台上传。
+
 从[公开 GitHub 仓库](https://github.com/xin87229-source/ecommerce-live-clips)选择 Code → Download ZIP，解压后打开包含 `cli.py` 的目录，再按[首次安装](docs/dependencies.md)配置本机环境。问题可通过 [GitHub Issues](https://github.com/xin87229-source/ecommerce-live-clips/issues)反馈版本、当前阶段和脱敏报错；不要附商家原片、账号信息或私人配置。main 源码下载与正式 Release 分开记录。
 
 当前提供 `basic`（中性商品讲解）和 `apparel`（女装）两套预设。默认成片上限 70 秒，1080×1920、30 fps CFR，保留原声；速度限 1.0～1.5 倍。`apparel` 要求已确认同款原片区间并集至少 20 秒，`basic` 不设这个数字门槛。两者都要有完整表达和商品证据。

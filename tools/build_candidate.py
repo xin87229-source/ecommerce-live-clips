@@ -89,7 +89,8 @@ def build(source, output_root):
         'license_decision': 'see_LICENSE' if 'LICENSE' in files else 'pending_owner_choice',
         'public_release_authorized': False,
         'external_operator_trials': 'not_verified', 'new_computer_installation': 'not_verified',
-        'business_acceptance': 'pending_real_review', 'state_reference': 'docs/release-status.md'})
+        'business_acceptance': 'see_docs_release_status; new_user_tasks_require_their_own_review',
+        'state_reference': 'docs/release-status.md'})
     files['PRIVACY-SCAN.json'] = encoded({'status': 'automated_checks_passed',
         'files_scanned': len(rows), 'findings': [], 'scope': 'allowlisted UTF-8 source only',
         'limitations': 'Pattern scan is not a guarantee; inspect the exact manifest before public release.'})

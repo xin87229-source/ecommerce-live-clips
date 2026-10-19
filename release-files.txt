@@ -77,3 +77,6 @@ tests/test_word_timing.py
 tools/build_candidate.py
 tools/serve_review.py
 tools/smoke_test.py
+pipeline/reviewed_delivery.py
+tests/test_reviewed_delivery.py
+docs/reviewed-delivery.md
