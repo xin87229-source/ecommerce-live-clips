@@ -239,7 +239,50 @@ def run(request):
     folder = folder_for(request['run_id'])
     from run_records import locked
     with locked(folder / 'execution'):
-        return _run(request)
+        state_path = folder / 'state.json'
+        previous = read(state_path) if state_path.exists() else {}
+        if not isinstance(previous, dict) or not isinstance(previous.get('failures', []), list):
+            raise ValueError('执行记录格式无效，请保留现场核实，不自动重置')
+        failures_before = len(previous.get('failures', []))
+        try:
+            return _run(request)
+        except Exception as error:
+            try:
+                state = read(state_path)
+            except (OSError, ValueError):
+                state = None
+            # Validation between stages must not leave a previous success as
+            # the latest outcome. Never rewrite another core or old-code run.
+            if (isinstance(state, dict) and state.get('schema_version') == 1
+                    and state.get('core') == request_core(request)
+                    and state.get('code_bindings') == code_bindings()
+                    and isinstance(state.get('failures', []), list)
+                    and len(state.get('failures', [])) == failures_before):
+                try:
+                    status(request['run_id'])
+                except Exception:
+                    # A protected task or broken prior evidence must remain
+                    # untouched; the original exception still reaches callers.
+                    pass
+                else:
+                    record_failure(state, state_path, request['run_id'], 'request-validation',
+                                   uuid.uuid4().hex[:8], error)
+            raise
+
+
+def request_core(request):
+    return {key: request.get(key, default) for key, default in
+            [('task_record', None), ('windows', None), ('category', 'other'), ('style', 'auto')]}
+
+
+def record_failure(state, state_path, run_id, name, attempt, error):
+    state.setdefault('failures', []).append({'stage': name, 'attempt': attempt, 'error': str(error)})
+    state['report'] = {
+        'run_id': run_id, 'status': 'ERROR', 'failed_stage': name,
+        'error': str(error), 'completed_stages': list(state['stages']),
+        'submitted': False, 'human_review': 'not_reviewed',
+        'next_action': '保留失败现场并处理该阶段错误；确认没有运行中的进程后用同一请求接续，已完成且绑定一致的阶段会复用'}
+    save(state_path, state)
 
 
 def _run(request):
@@ -262,8 +305,7 @@ def _run(request):
     require_local_task(task)
     context = read(task)['task_context']
     source = Path(context['source_video']).resolve(strict=True)
-    core = {key: request.get(key, default) for key, default in
-            [('task_record', None), ('windows', None), ('category', 'other'), ('style', 'auto')]}
+    core = request_core(request)
     folder = folder_for(run_id)
     state_path = folder / 'state.json'
     if state_path.exists():
@@ -303,14 +345,7 @@ def _run(request):
             outputs = refs(output_paths(result))
             verify(state['bindings'])
         except Exception as error:
-            failure = {'stage': name, 'attempt': attempt, 'error': str(error)}
-            state.setdefault('failures', []).append(failure)
-            state['report'] = {
-                'run_id': run_id, 'status': 'ERROR', 'failed_stage': name,
-                'error': str(error), 'completed_stages': list(state['stages']),
-                'submitted': False, 'human_review': 'not_reviewed',
-                'next_action': '保留失败现场并处理该阶段错误；确认没有运行中的进程后用同一请求接续，已完成且绑定一致的阶段会复用'}
-            save(state_path, state)
+            record_failure(state, state_path, run_id, name, attempt, error)
             raise
         state['stages'][name] = {'inputs': input_refs, 'outputs': outputs, 'result': result}
         save(state_path, state)
@@ -457,7 +492,7 @@ def main():
     try:
         result = run(read(args.request)) if args.action == 'run' else status(args.run_id)
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0
+        return 1 if result.get('status') == 'ERROR' else 0
     except (ValueError, OSError, KeyError, TypeError, RuntimeError) as error:
         print(json.dumps({'status': 'ERROR', 'error': str(error)}, ensure_ascii=False))
         return 1

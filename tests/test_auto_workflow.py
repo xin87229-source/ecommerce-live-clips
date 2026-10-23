@@ -4,6 +4,7 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -251,11 +252,20 @@ class AutoWorkflowTests(unittest.TestCase):
 
     def test_rehearsal_missing_spec_fails_and_keeps_state_recoverable(self):
         api, _, request, spec, _, _, calls, _ = self.rehearsal_fixture()
+        api.run(self.request)
+        original = spec.read_bytes()
         spec.unlink()
         with self.assertRaises(FileNotFoundError):
             api.run(request)
         self.assertFalse(calls)
         self.assertNotIn('rehearsal', api.read(api.folder_for('unit') / 'state.json')['stages'])
+        self.assertEqual(api.status('unit')['status'], 'ERROR')
+        self.assertEqual(api.status('unit')['failed_stage'], 'request-validation')
+        spec.write_bytes(original)
+        with patch.object(api, 'extract_or_resume') as extract:
+            self.assertEqual(api.run(request)['status'], 'needs_content_review')
+            extract.assert_not_called()
+        self.assertEqual(len(api.read(api.folder_for('unit') / 'state.json')['failures']), 1)
 
     def test_rehearsal_changed_inputs_or_removed_request_do_not_reuse(self):
         api, _, request, spec, cut, _, calls, _ = self.rehearsal_fixture()
@@ -396,6 +406,108 @@ class AutoWorkflowTests(unittest.TestCase):
         self.assertEqual(report['status'], 'ERROR')
         self.assertEqual(report['failed_stage'], 'cut')
         self.assertIn('comparison interrupted', report['error'])
+
+    def test_new_cut_then_card_validation_failure_is_saved_and_resumes_without_rerender(self):
+        api, request, _, _, builds, builder, _ = self.delivery_fixture()
+        delivered = api.run(request)
+        old_files = {p: p.read_bytes() for p in builds[0].iterdir()}
+        card_spec = self.root / 'private-context/comparison.json'
+        extraction = self.root / 'private-context/window/extraction.json'
+        card_spec.write_text(json.dumps({'extraction': str(extraction), 'versions': []}))
+        cut_spec = api.read(Path(request['rehearsal_spec']))['cut_spec']
+        cut_outputs = []
+        def cut(path, task_id):
+            output = self.root / 'outputs/review-cuts' / task_id
+            output.mkdir(parents=True)
+            preview = output / 'preview.mp4'
+            preview.write_bytes(b'synthetic comparison')
+            cut_outputs.append(preview)
+            return {'output': str(output), 'preview': str(preview)}
+        def generate(spec, destination):
+            destination.parent.mkdir(parents=True)
+            destination.write_text('synthetic review card')
+            return {'index': str(destination)}
+        appended = dict(request, cut_spec=cut_spec, review_spec=str(card_spec))
+        with patch.object(api.review_cut, 'plan'), patch.object(api.review_cut, 'run', side_effect=cut) as render, \
+             patch.object(api.review_card, 'generate', side_effect=generate):
+            with self.assertRaisesRegex(ValueError, '审核卡必须精确绑定'):
+                api.run(appended)
+            failure = api.status('unit')
+            self.assertEqual(failure['status'], 'ERROR')
+            self.assertEqual(failure['failed_stage'], 'request-validation')
+            self.assertIn('cut', failure['completed_stages'])
+            self.assertNotIn('card', failure['completed_stages'])
+            self.assertNotIn('current_artifact', failure)
+            card_spec.write_text(json.dumps({'extraction': str(extraction), 'versions': [
+                {'path': str(cut_outputs[0]), 'sha256': api.digest(cut_outputs[0])}]}))
+            recovered = api.run(appended)
+            self.assertEqual(recovered['status'], 'local_delivery_ready')
+            self.assertEqual(recovered['current_artifact'], delivered['current_artifact'])
+            self.assertEqual(api.status('unit'), recovered)
+            render.assert_called_once()
+        builder.assert_called_once()
+        self.assertEqual(old_files, {p: p.read_bytes() for p in builds[0].iterdir()})
+        self.assertEqual(len(api.read(api.folder_for('unit') / 'state.json')['failures']), 1)
+
+    def test_rejected_other_core_code_or_active_lock_does_not_rewrite_existing_state(self):
+        api, _, _, _, _, _, _, _ = self.rehearsal_fixture()
+        api.run(self.request)
+        path = api.folder_for('unit') / 'state.json'
+        before = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '核心输入变化'):
+            api.run(dict(self.request, category='tops'))
+        self.assertEqual(path.read_bytes(), before)
+        with patch.object(api, 'code_bindings', return_value={'changed': 'source'}):
+            with self.assertRaisesRegex(ValueError, '源码'):
+                api.run(self.request)
+        self.assertEqual(path.read_bytes(), before)
+        original_card = self.card.read_bytes()
+        card = api.read(self.card)
+        card['status'], card['submitted'] = 'PUBLISHED_VERIFIED', True
+        self.card.write_text(json.dumps(card))
+        with self.assertRaisesRegex(ValueError, '不能作为未提交'):
+            api.run(self.request)
+        self.assertEqual(path.read_bytes(), before)
+        self.card.write_bytes(original_card)
+        original_source = self.source.read_bytes()
+        self.source.write_bytes(b'changed source bytes')
+        with self.assertRaisesRegex(ValueError, '变化|哈希'):
+            api.run(self.request)
+        self.assertEqual(path.read_bytes(), before)
+        self.source.write_bytes(original_source)
+        lock = path.parent / 'execution.lock'
+        lock.write_bytes(b'live or unknown owner; do not touch')
+        with self.assertRaises(FileExistsError):
+            api.run(self.request)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(lock.read_bytes(), b'live or unknown owner; do not touch')
+
+    def test_malformed_state_is_reported_without_overwrite(self):
+        api = self.api()
+        path = api.folder_for('unit') / 'state.json'
+        path.parent.mkdir(parents=True)
+        for value in ([], None, {'failures': None}, {'failures': 3}):
+            path.write_text(json.dumps(value))
+            before = path.read_bytes()
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, '执行记录'):
+                api.run(self.request)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_public_status_cli_returns_nonzero_for_saved_failure(self):
+        api, _, _, _, _, _, _, _ = self.rehearsal_fixture()
+        with patch.object(api.source_windows, 'transcribe_preview', side_effect=RuntimeError('test model failure')):
+            with self.assertRaises(RuntimeError):
+                api.run(self.request)
+        state = api.folder_for('unit') / 'state.json'
+        before = state.read_bytes()
+        result = subprocess.run([sys.executable, '-B', str(Path(api.__file__).parents[1] / 'cli.py'),
+                                 '--workspace', str(self.root), 'auto', 'status', 'unit'],
+                                capture_output=True, encoding='utf-8')
+        report = json.loads(result.stdout)
+        self.assertEqual(report['status'], 'ERROR')
+        self.assertEqual(report['failed_stage'], 'asr-0')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(state.read_bytes(), before)
 
     def test_delivery_requires_current_rehearsal_and_excludes_old_production_branch(self):
         api = self.api()
