@@ -80,3 +80,4 @@ tools/smoke_test.py
 pipeline/reviewed_delivery.py
 tests/test_reviewed_delivery.py
 docs/reviewed-delivery.md
+docs/service-handoff.md
