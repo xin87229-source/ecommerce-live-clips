@@ -90,7 +90,7 @@ def fit(meta, mode, anchor, size, *, exact_size=False):
     return vf + ",setsar=1", size
 
 
-def cut(source, segments, meta, vf, destination):
+def cut(source, segments, meta, vf, destination, *, preserve_terminal_frame=False):
     """Adapt cut.py accurate seek; concat decoded segments in a single encode.
 
     No stream-copy keyframe snap, temporary parts or concat-path escaping.
@@ -117,8 +117,11 @@ def cut(source, segments, meta, vf, destination):
     filters.append("".join(video_labels) + f"interleave=nb_inputs={len(segments)}:duration=longest[video]")
     filters.append("".join(audio_labels) + f"concat=n={len(segments)}:v=0:a=1[audio]")
     # Convert samples before canvas padding, including the already-vertical/no-resize path.
+    # A probed terminal source frame has no following frame to advance the
+    # interleave EOF timestamp. Keep it only when the caller proved its span.
+    eof = ':eof_action=pass' if preserve_terminal_frame else ''
     filters.append("[video]scale=in_range=auto:out_range=tv," + ((vf + ",") if vf else "")
-                   + f"fps={meta['fps']:.6f}:start_time=0,format=yuv420p[out]")
+                   + f"fps={meta['fps']:.6f}:start_time=0{eof},format=yuv420p[out]")
     return args + ["-filter_complex", ";".join(filters), "-map", "[out]", "-map", "[audio]",
                    "-map_metadata", "-1", "-map_chapters", "-1", "-c:v", "libx264",
                    "-preset", "fast", "-crf", "18", "-color_range", "tv", "-c:a", "aac", "-b:a", "192k",

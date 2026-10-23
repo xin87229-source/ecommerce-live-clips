@@ -504,6 +504,114 @@ class SourceWindowsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '非恒定帧率'):
             self.windows._verify_frame_grid(VariableMedia(), self.source, 0, .2, 25)
 
+    def _terminal_media(self, duration_key='duration_time', duration='0.033333', gap=False):
+        frames = [{'best_effort_timestamp_time': f'{7+i/30:.6f}'} for i in range(60)]
+        if duration_key:
+            frames[-1][duration_key] = duration
+        if gap:
+            del frames[30]
+        class Media:
+            def command(self, tool, args):
+                return json.dumps({'frames': frames})
+        return Media()
+
+    def test_terminal_frame_duration_preserves_full_window_and_actual_frame_count(self):
+        for field in ('duration_time', 'pkt_duration_time'):
+            with self.subTest(field=field):
+                grid = self.windows._verify_frame_grid(
+                    self._terminal_media(field), self.source, 0, 2, 30, 7)
+                self.assertEqual(grid['frame_count'], 60)
+                self.assertAlmostEqual(grid['last_pts'], 8.966667)
+                self.assertAlmostEqual(grid['aligned_end_seconds'], 2)
+                self.assertAlmostEqual(grid['terminal_frame_duration_seconds'], 1/30, places=6)
+                item = {'requested_range': [0, 2], 'window': {'duration_seconds': 2},
+                        'frame_grid': grid}
+                self.assertEqual(self.windows._preview_window_duration(item), 2)
+
+    def test_terminal_boundary_requires_duration_and_regular_actual_frames(self):
+        for value in (None, 0, -1, True, 'NaN', 'Infinity', 'bad', '.1'):
+            with self.subTest(duration=value), self.assertRaises(ValueError):
+                self.windows._verify_frame_grid(
+                    self._terminal_media(duration=value), self.source, 0, 2, 30, 7)
+        with self.assertRaises(ValueError):
+            self.windows._verify_frame_grid(self._terminal_media(None), self.source, 0, 2, 30, 7)
+        with self.assertRaisesRegex(ValueError, '非恒定帧率'):
+            self.windows._verify_frame_grid(self._terminal_media(gap=True), self.source, 0, 2, 30, 7)
+
+    def test_interior_boundary_does_not_extend_an_existing_frame_start(self):
+        grid = self.windows._verify_frame_grid(self._terminal_media(), self.source, 0, 1, 30, 7)
+        self.assertEqual(grid['aligned_end_seconds'], 1)
+        self.assertEqual(grid['last_pts'], 8)
+        self.assertNotIn('terminal_frame_duration_seconds', grid)
+
+    def test_preview_rejects_invalid_or_inconsistent_terminal_evidence(self):
+        _, original = self._extraction()
+        for duration in (None, 0, -1, True, float('nan'), float('inf'), .1, 1/30):
+            with self.subTest(duration=duration):
+                # Adding an endpoint duration to an old start-point record is inconsistent.
+                original['frame_grid']['terminal_frame_duration_seconds'] = duration
+                with self.assertRaises(ValueError):
+                    self.windows._preview_window_duration(original)
+
+    @unittest.skipUnless(os.environ.get('ECLIP_TEST_FFMPEG') and os.environ.get('ECLIP_TEST_FFPROBE'),
+                         'set ECLIP_TEST_FFMPEG and ECLIP_TEST_FFPROBE for actual media regression')
+    def test_real_full_source_window_keeps_last_frame_without_changing_review(self):
+        from media_adapter import MediaAdapter
+        from PIL import Image
+        cfg = {'ffmpeg_path': os.environ['ECLIP_TEST_FFMPEG'],
+               'ffprobe_path': os.environ['ECLIP_TEST_FFPROBE']}
+        (self.workspace / 'config.json').write_text(json.dumps(cfg), encoding='utf-8')
+        media = MediaAdapter(cfg, self.workspace / 'terminal-fixture.log')
+        self.source = self.source.with_suffix('.mkv')
+        media.write_media(['-f', 'lavfi', '-i', 'color=red:size=64x96:rate=30:duration=2',
+                           '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=2',
+                           '-vf', "drawbox=color=blue:t=fill:enable='gte(n,59)'",
+                           '-c:v', 'libx264', '-c:a', 'pcm_s16le', str(self.source)], self.source)
+        self.context['source_video'] = str(self.source)
+        self.context['source_sha256'] = self.support.file_hash(self.source)
+        self._write_card()
+        before = self.card.read_bytes()
+        result = self.windows.extract(self.card, 0, 2)
+        record = self.support.read(result['extraction'])
+        self.assertAlmostEqual(record['source_span'][1], 2, delta=.001)
+        self.assertEqual(record['frame_grid']['frame_count'], 60)
+        self.assertAlmostEqual(record['source_audio_audit']['requested_end_pts'], 2, places=3)
+        self.assertAlmostEqual(self.windows._preview_window_duration(record), 2, delta=.001)
+        self.assertEqual(record['review_status'], 'unknown')
+        self.assertEqual(self.card.read_bytes(), before)
+        self.assertEqual(self.support.file_hash(self.source), self.context['source_sha256'])
+        window = Path(result['window']['path'])
+        probe = json.loads(media.command('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
+                           '-count_frames', '-show_entries', 'stream=nb_read_frames',
+                           '-of', 'json', str(window)]))
+        self.assertEqual(int(probe['streams'][0]['nb_read_frames']), 60)
+        last = window.parent / 'last-frame.png'
+        media.write_media(['-i', str(window), '-vf', 'select=eq(n\\,59)', '-frames:v', '1', str(last)], last)
+        with Image.open(last) as image:
+            red, _, blue = image.convert('RGB').getpixel((20, 20))
+        self.assertGreater(blue, red+150)
+
+    @unittest.skipUnless(os.environ.get('ECLIP_TEST_FFMPEG') and os.environ.get('ECLIP_TEST_FFPROBE'),
+                         'set ECLIP_TEST_FFMPEG and ECLIP_TEST_FFPROBE for actual media regression')
+    def test_real_terminal_frame_without_full_audio_is_not_silently_padded(self):
+        from media_adapter import MediaAdapter
+        cfg = {'ffmpeg_path': os.environ['ECLIP_TEST_FFMPEG'],
+               'ffprobe_path': os.environ['ECLIP_TEST_FFPROBE']}
+        (self.workspace / 'config.json').write_text(json.dumps(cfg), encoding='utf-8')
+        media = MediaAdapter(cfg, self.workspace / 'short-audio-fixture.log')
+        self.source = self.source.with_suffix('.mkv')
+        media.write_media(['-f', 'lavfi', '-i', 'color=red:size=64x96:rate=30:duration=2',
+                           '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000:duration=1.97',
+                           '-c:v', 'libx264', '-c:a', 'pcm_s16le', str(self.source)], self.source)
+        self.context['source_video'] = str(self.source)
+        self.context['source_sha256'] = self.support.file_hash(self.source)
+        self._write_card()
+        before = self.card.read_bytes()
+        with self.assertRaisesRegex(ValueError, '原片音频.*覆盖'):
+            self.windows.extract(self.card, 0, 2)
+        self.assertEqual(self.card.read_bytes(), before)
+        self.assertFalse(list(self.workspace.rglob('window.mp4')))
+
 
 if __name__ == '__main__':
     unittest.main()

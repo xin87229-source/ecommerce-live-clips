@@ -94,14 +94,29 @@ def _verify_frame_grid(media, source, start, end, fps, video_start=0):
     length = requested_end - begin + 20
     raw = json.loads(media.command('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
                             '-read_intervals', f'{begin:.6f}%+{length:.6f}',
-                            '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', str(source)]))
-    pts = sorted(float(frame['best_effort_timestamp_time']) for frame in raw.get('frames', [])
-                 if frame.get('best_effort_timestamp_time') is not None)
+                            '-show_entries', 'frame=best_effort_timestamp_time,duration_time,pkt_duration_time',
+                            '-of', 'json', str(source)]))
+    frames = sorted((frame for frame in raw.get('frames', [])
+                     if frame.get('best_effort_timestamp_time') is not None),
+                    key=lambda frame: float(frame['best_effort_timestamp_time']))
+    pts = [float(frame['best_effort_timestamp_time']) for frame in frames]
     expected = 1 / fps
     if not pts or any(not math.isfinite(point) for point in pts):
         raise ValueError('窗口原片帧时间戳缺失或无效')
     aligned_start = min(pts, key=lambda point: abs(point-requested_start))
     aligned_end = min(pts, key=lambda point: abs(point-requested_end))
+    # The last real frame ends after its PTS. Accept that right-open boundary
+    # only with a probed duration, never by inventing one more decoded frame.
+    terminal_duration = 0
+    raw_duration = frames[-1].get('duration_time', frames[-1].get('pkt_duration_time'))
+    try:
+        duration = float(raw_duration) if not isinstance(raw_duration, bool) else 0
+    except (TypeError, ValueError):
+        duration = 0
+    if (math.isfinite(duration) and duration > 0 and abs(duration-expected) <= .002
+            and abs(pts[-1]+duration-requested_end) < abs(aligned_end-requested_end)):
+        aligned_end = pts[-1]+duration
+        terminal_duration = duration
     if (abs(aligned_start-requested_start) > expected/2 + .002
             or abs(aligned_end-requested_end) > expected/2 + .002
             or aligned_start >= aligned_end):
@@ -110,13 +125,16 @@ def _verify_frame_grid(media, source, start, end, fps, video_start=0):
     if (len(chosen) < 2
             or any(abs(right-left-expected) > .002 for left, right in zip(chosen, chosen[1:]))):
         raise ValueError('窗口源画面时间戳不连续或非恒定帧率，拒绝猜测原时间映射')
-    return {'first_pts': chosen[0], 'last_pts': chosen[-1], 'frame_count': len(chosen),
+    result = {'first_pts': chosen[0], 'last_pts': chosen[-1], 'frame_count': len(chosen),
             'aligned_start_seconds': aligned_start-video_start,
             'aligned_end_seconds': aligned_end-video_start,
             'requested_start_pts': requested_start, 'requested_end_pts': requested_end,
             'video_start_pts': video_start,
             'expected_step_seconds': expected, 'max_step_error_seconds': max(
                 abs(right-left-expected) for left, right in zip(chosen, chosen[1:]))}
+    if terminal_duration:
+        result['terminal_frame_duration_seconds'] = terminal_duration
+    return result
 
 
 def _verify_audio_span(media, source, start_pts, end_pts, sample_rate):
@@ -184,11 +202,12 @@ def extract(task_record, start, end):
     frame_grid = _verify_frame_grid(media, source, start, end, meta['fps'], meta['video_start'])
     aligned_start = frame_grid['aligned_start_seconds']
     aligned_end = frame_grid['aligned_end_seconds']
-    source_audio = _verify_audio_span(media, source, frame_grid['first_pts'], frame_grid['last_pts'],
+    source_audio = _verify_audio_span(media, source, frame_grid['first_pts'], meta['video_start']+aligned_end,
                                      meta['audio']['sample_rate'])
     from transcribe_adapter import audio_audit
     window = folder / 'window.mp4'
-    args = ffmpeg_subset.cut(source, [(aligned_start, aligned_end)], meta, '', window)
+    args = ffmpeg_subset.cut(source, [(aligned_start, aligned_end)], meta, '', window,
+                            preserve_terminal_frame=bool(frame_grid.get('terminal_frame_duration_seconds')))
     args = [*args[:-1], '-t', f'{aligned_end-aligned_start:.6f}', args[-1]]
     media.write_media(args, window)
     win_meta = media.probe(window)
@@ -286,12 +305,17 @@ def _preview_window_duration(item):
         raise ValueError('ASR预览缺少有效帧映射，不能推断120秒边界余量')
     start, end = grid['aligned_start_seconds'], grid['aligned_end_seconds']
     step, origin = grid['expected_step_seconds'], grid['video_start_pts']
+    terminal_duration = grid.get('terminal_frame_duration_seconds', 0)
+    if ('terminal_frame_duration_seconds' in grid
+            and (type(terminal_duration) not in (int, float) or not math.isfinite(terminal_duration)
+                 or terminal_duration <= 0 or abs(terminal_duration-step) > .002)):
+        raise ValueError('ASR预览末帧结束边界缺少有效的实际帧时长')
     if (not 1/120 <= step <= 1 or not 0 <= grid['max_step_error_seconds'] <= .002
             or not 0 <= start < end or origin < 0
             or abs(start-requested[0]) > step/2+.002
             or abs(end-requested[1]) > step/2+.002
             or any(abs(grid[key]-expected) > .001 for key, expected in
-                   [('first_pts', origin+start), ('last_pts', origin+end),
+                   [('first_pts', origin+start), ('last_pts', origin+end-terminal_duration),
                     ('requested_start_pts', origin+requested[0]),
                     ('requested_end_pts', origin+requested[1])])
             or abs(duration-(end-start)) > min(step, .05)+.000001):
