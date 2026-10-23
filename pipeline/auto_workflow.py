@@ -13,6 +13,7 @@ import source_windows
 import review_cut
 import review_card
 import rehearsal
+import reviewed_delivery
 
 
 def read(path):
@@ -103,10 +104,32 @@ def status(run_id):
         verify(entry['outputs'])
     if 'rehearsal' in state['stages']:
         rehearsal.check(state['stages']['rehearsal']['result']['package'])
+    if 'delivery' in state['stages']:
+        result = reviewed_delivery.check(state['stages']['delivery']['result']['package'])
+        report = state.get('report') or {}
+        if report.get('status') == 'ERROR' and report.get('failed_stage') not in state['stages']:
+            return report
+        # A stage is saved before the final report. Recover its real artifact
+        # even if the process stopped while the old draft report was on disk.
+        return delivery_report(dict(state.get('report') or {}, run_id=run_id), result)
     return state.get('report') or {
         'run_id': run_id, 'status': 'needs_resume', 'submitted': False,
         'human_review': 'not_reviewed', 'completed_stages': list(state['stages']),
         'next_action': '阶段已有记录但没有最终报告；核实没有运行中的进程或锁后，用原请求接续，不删除旧产物'}
+
+
+def delivery_report(report, result):
+    package = Path(result['package'])
+    report.update(status='local_delivery_ready', delivery=result, submitted=False,
+                  human_review='prior_accepted_content_preserved',
+                  new_visual_review=result['new_visual_review'],
+                  current_artifact={'kind': 'reviewed_local_delivery', 'package': str(package),
+                                    'index': str(package / 'index.html'), 'video': str(package / 'video.mp4')},
+                  next_action='已审内容的正式本地交付已生成；打开current_artifact检查去水印后的新画面及封面，另记结果。原内容确认只继承未改范围，未上传或提交')
+    # Do not carry an earlier failed-attempt summary into a completed report.
+    for key in ('failed_stage', 'error', 'completed_stages'):
+        report.pop(key, None)
+    return report
 
 
 def require_local_task(task):
@@ -221,8 +244,10 @@ def run(request):
 
 def _run(request):
     if not isinstance(request, dict) or set(request) - {
-            'run_id', 'task_record', 'windows', 'category', 'style', 'cut_spec', 'review_spec', 'rehearsal_spec', 'production'}:
+            'run_id', 'task_record', 'windows', 'category', 'style', 'cut_spec', 'review_spec', 'rehearsal_spec', 'production', 'delivery_spec'}:
         raise ValueError('request含未知字段；不接受命令、shell或任意执行步骤')
+    if request.get('delivery_spec') and (not request.get('rehearsal_spec') or 'production' in request):
+        raise ValueError('delivery_spec须接续本次rehearsal_spec，不能与production同时使用')
     run_id = identifier(request['run_id'])
     task = local(request['task_record'])
     windows = request['windows']
@@ -260,6 +285,8 @@ def _run(request):
         raise ValueError('已执行production不能从接续请求删除，请使用新run_id')
     if 'rehearsal' in state['stages'] and not request.get('rehearsal_spec'):
         raise ValueError('已执行rehearsal_spec不能从接续请求删除，请使用新run_id')
+    if 'delivery' in state['stages'] and not request.get('delivery_spec'):
+        raise ValueError('已执行delivery_spec不能从接续请求删除，请使用新run_id')
 
     def stage(name, inputs, action, output_paths):
         input_refs = refs(inputs) if inputs else {}
@@ -337,6 +364,14 @@ def _run(request):
                       current_artifact={'kind': 'unreviewed_rehearsal', 'package': str(package),
                                         'index': str(package / 'index.html'), 'video': str(package / 'draft-video.mp4')},
                       next_action='完整待审包和本地发帖演练已生成；打开current_artifact核对视频、字幕、封面和原速问题。原话、同款与最终内容仍待真实审核，未上传或提交')
+    if request.get('delivery_spec'):
+        spec = local(request['delivery_spec'])
+        if local(read(spec)['rehearsal']) != Path(report['rehearsal']['package']).resolve():
+            raise ValueError('delivery_spec必须精确绑定本次已生成的演练包')
+        delivered = stage('delivery', [spec],
+                          lambda attempt: reviewed_delivery.build(spec, run_id + '-d-' + attempt),
+                          lambda r: [r['package']])
+        report = delivery_report(report, delivered)
     if request.get('production'):
         formal_task = request['production'].get('task_record') if isinstance(request['production'], dict) else None
         if formal_task:

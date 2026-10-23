@@ -325,6 +325,148 @@ class AutoWorkflowTests(unittest.TestCase):
         self.assertEqual(report['human_review'], 'not_reviewed')
         self.assertEqual(api.status('unit'), report)
 
+    def delivery_fixture(self):
+        api, _, request, _, _, _, calls, _ = self.rehearsal_fixture()
+        draft = api.run(request)
+        spec = self.root / 'private-context/delivery.json'
+        spec.write_text(json.dumps({'rehearsal': draft['rehearsal']['package']}))
+        import reviewed_delivery
+        builds = []
+
+        def build(path, task_id):
+            package = self.root / 'outputs/deliveries' / task_id
+            package.mkdir(parents=True)
+            for name in ('index.html', 'video.mp4', 'delivery.json'):
+                (package / name).write_text('synthetic stage fixture, not human evidence')
+            builds.append(package)
+            return {'package': str(package), 'status': 'LOCAL_DELIVERY_NOT_SUBMITTED',
+                    'new_visual_review': 'not_reviewed',
+                    'content_confirmation': 'prior_accepted_content_preserved', 'submitted': False}
+
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        builder = stack.enter_context(patch.object(reviewed_delivery, 'build', side_effect=build))
+        checker = stack.enter_context(patch.object(reviewed_delivery, 'check', side_effect=lambda package: {
+            'package': str(package), 'status': 'LOCAL_DELIVERY_NOT_SUBMITTED',
+            'new_visual_review': 'not_reviewed',
+            'content_confirmation': 'prior_accepted_content_preserved', 'submitted': False}))
+        return api, dict(request, delivery_spec=str(spec)), spec, calls, builds, builder, checker
+
+    def test_accepted_delivery_resumes_without_rendering_or_claiming_new_visual_review(self):
+        api, request, _, drafts, builds, builder, checker = self.delivery_fixture()
+        original = self.card.read_bytes()
+        report = api.run(request)
+        self.assertEqual(report['status'], 'local_delivery_ready')
+        self.assertEqual(report['current_artifact']['kind'], 'reviewed_local_delivery')
+        self.assertEqual(report['current_artifact']['package'], str(builds[0]))
+        self.assertEqual(report['current_artifact']['video'], str(builds[0] / 'video.mp4'))
+        self.assertEqual(report['human_review'], 'prior_accepted_content_preserved')
+        self.assertEqual(report['new_visual_review'], 'not_reviewed')
+        self.assertFalse(report['submitted'])
+        self.assertEqual(api.run(request), report)
+        self.assertEqual(api.status('unit'), report)
+        self.assertEqual(len(drafts), 1)
+        builder.assert_called_once()
+        checker.assert_called_with(str(builds[0]))
+        self.assertEqual(self.card.read_bytes(), original)
+
+    def test_completed_delivery_is_found_after_final_report_write_is_interrupted(self):
+        api, request, _, _, builds, builder, _ = self.delivery_fixture()
+        api.run(request)
+        state_path = api.folder_for('unit') / 'state.json'
+        state = api.read(state_path)
+        state['report'] = {'run_id': 'unit', 'status': 'needs_content_review',
+                           'human_review': 'not_reviewed', 'submitted': False}
+        api.save(state_path, state)
+        report = api.status('unit')
+        self.assertEqual(report['status'], 'local_delivery_ready')
+        self.assertEqual(report['current_artifact']['package'], str(builds[0]))
+        self.assertEqual(report['human_review'], 'prior_accepted_content_preserved')
+        builder.assert_called_once()
+
+    def test_existing_delivery_does_not_hide_later_stage_failure(self):
+        api, request, _, _, _, _, _ = self.delivery_fixture()
+        api.run(request)
+        cut = api.read(Path(request['rehearsal_spec']))['cut_spec']
+        with patch.object(api.review_cut, 'plan'), patch.object(
+                api.review_cut, 'run', side_effect=RuntimeError('new comparison interrupted')):
+            with self.assertRaisesRegex(RuntimeError, 'comparison interrupted'):
+                api.run(dict(request, cut_spec=cut))
+        report = api.status('unit')
+        self.assertEqual(report['status'], 'ERROR')
+        self.assertEqual(report['failed_stage'], 'cut')
+        self.assertIn('comparison interrupted', report['error'])
+
+    def test_delivery_requires_current_rehearsal_and_excludes_old_production_branch(self):
+        api = self.api()
+        for request in (dict(self.request, delivery_spec='not-read.json'),
+                        dict(self.request, rehearsal_spec='not-read.json',
+                             delivery_spec='not-read.json', production={})):
+            with patch.object(api.source_windows, 'original_context') as source:
+                with self.assertRaisesRegex(ValueError, 'delivery_spec|production'):
+                    api.run(request)
+                source.assert_not_called()
+
+    def test_delivery_cannot_attach_another_accepted_rehearsal(self):
+        api, request, spec, _, builds, builder, _ = self.delivery_fixture()
+        other = self.root / 'outputs/reviews/rehearsals/another'
+        other.mkdir()
+        spec.write_text(json.dumps({'rehearsal': str(other)}))
+        with self.assertRaisesRegex(ValueError, '本次.*演练'):
+            api.run(request)
+        builder.assert_not_called()
+        self.assertFalse(builds)
+
+    def test_delivery_rejects_missing_or_changed_completed_spec(self):
+        api, request, spec, _, _, builder, _ = self.delivery_fixture()
+        api.run(request)
+        without = dict(request)
+        del without['delivery_spec']
+        with self.assertRaisesRegex(ValueError, 'delivery_spec'):
+            api.run(without)
+        spec.write_text(spec.read_text() + '\n')
+        with self.assertRaisesRegex(ValueError, '变化|哈希'):
+            api.status('unit')
+        builder.assert_called_once()
+
+    def test_delivery_failure_preserves_attempt_and_retries_with_fresh_output(self):
+        api, request, _, drafts, builds, builder, _ = self.delivery_fixture()
+        successful_build = builder.side_effect
+
+        def fail(path, task_id):
+            result = successful_build(path, task_id)
+            (Path(result['package']) / 'failure.json').write_text('render interrupted')
+            raise RuntimeError('render interrupted')
+
+        builder.side_effect = fail
+        with self.assertRaisesRegex(RuntimeError, 'render interrupted'):
+            api.run(request)
+        failure = api.status('unit')
+        self.assertEqual(failure['status'], 'ERROR')
+        self.assertEqual(failure['failed_stage'], 'delivery')
+        self.assertNotIn('delivery', failure['completed_stages'])
+        old = builds[0]
+        before = {p.name: p.read_bytes() for p in old.iterdir()}
+        builder.side_effect = successful_build
+        result = api.run(request)
+        self.assertEqual(result['status'], 'local_delivery_ready')
+        self.assertNotEqual(Path(result['delivery']['package']), old)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in old.iterdir()})
+        self.assertEqual(len(drafts), 1)
+
+    def test_delivery_rejection_never_becomes_success_and_status_rechecks_nested_evidence(self):
+        api, request, _, _, _, builder, checker = self.delivery_fixture()
+        action = builder.side_effect
+        builder.side_effect = ValueError('缺少真实完整确认')
+        with self.assertRaisesRegex(ValueError, '完整确认'):
+            api.run(request)
+        self.assertEqual(api.status('unit')['status'], 'ERROR')
+        builder.side_effect = action
+        api.run(request)
+        checker.side_effect = ValueError('原始反馈哈希变化')
+        with self.assertRaisesRegex(ValueError, '反馈哈希'):
+            api.status('unit')
+
     def test_rehearsal_non_object_visual_has_explicit_validation_error(self):
         api, _, request, _, cut, _, calls, _ = self.rehearsal_fixture()
         provided = json.loads(cut.read_text())

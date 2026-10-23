@@ -11,6 +11,8 @@
 3. 查看已确认字幕和真实封面帧，写标题、正文、话题与封面文字。用字幕编号和原话引用说明依据，不加入未核实的材质、价格、库存、销量或效果承诺。
 4. 运行公开入口。`$Python`、`$Install`、`$Workspace` 沿用安装文档中的实际绝对路径：
 
+若演练由 `auto` 制作，优先按[统一入口](one-click.md)在原请求追加 `delivery_spec`，自动复用已完成阶段并返回正式交付。下列独立入口保留给既有演练任务；不要为接入 auto 伪造旧阶段记录。
+
 ```powershell
 & $Python "$Install/cli.py" --workspace "$Workspace" delivery build --spec "$Workspace/private-context/delivery-spec.json" --task-id accepted-01
 & $Python "$Install/cli.py" --workspace "$Workspace" delivery check --package "$Workspace/outputs/deliveries/accepted-01"

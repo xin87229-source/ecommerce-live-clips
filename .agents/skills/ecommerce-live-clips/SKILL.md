@@ -13,6 +13,8 @@ description: 面向会用 Codex 的女装电商运营，在 Windows 按商品类
 
 一次委托制作时先读 [统一入口](../../../docs/one-click.md)，使用 `auto run` 串联已存在的能力。需要完整待审效果时在同一请求补齐 `rehearsal_spec`，由统一入口制作并用 `current_artifact` 返回包、页面和视频，避免只交下一步命令。`needs_agent_decision` 表示你应继续查看和决策，不是要求用户填写程序材料；`needs_content_review` 与 `completed_unreviewed` 均不表示人工通过。已有任务先 `auto status` 检查再接续，旧版各阶段入口仍可用。
 
+本次演练收到真实完整内容确认后，在原 auto 请求追加 `delivery_spec`，由既有已审交付门禁继续制作。必须绑定本次演练包，不能混接其他已审稿或旧 `production` 分支。返回 `local_delivery_ready` 时交付 `current_artifact`，原确认只覆盖未改内容，新画面和封面另行实看；重复接续不应重渲染。升级源码后保留旧 auto 指纹，新流程用新 `run_id`，不能改写旧状态假装可续。
+
 ## 开始与接续
 
 先确定独立工作目录、原片、目标商品参考。可从已有素材得知的信息先查，不把启动变成问卷。底层命令为兼容旧任务保留 `basic` 默认；女装任务由你明确选择 `apparel`，后者要求完整检索后同款素材并集至少20秒。两者均最多70秒、1080×1920、30 fps、1～1.5倍速，速度要服从真实表达。局部试跑使用 `--scope test`，标明所检窗口，不能据此报告整场产量。

@@ -217,7 +217,19 @@ class ReviewedDeliveryMediaTests(unittest.TestCase):
             fixture.request['asr_previews'] = [str(fixture.preview)]
             fixture.request['highlight_terms'] = ['机器', '原文']
             fixture.save(fixture.rehearsal, fixture.request)
-            package = Path(fixture.api().build(fixture.rehearsal, 'synthetic-draft')['package'])
+            fixture.api()
+            auto = importlib.reload(importlib.import_module('auto_workflow'))
+            auto_request = {'run_id': 'synthetic-auto', 'task_record': str(fixture.card),
+                            'windows': [{'start': 0, 'end': 5}],
+                            'rehearsal_spec': str(fixture.rehearsal)}
+            # Only ASR is a synthetic fixture: this source is a sine tone, not
+            # speech. Extraction reuse, rendering and state persistence are real.
+            with patch.object(auto.source_windows, 'transcribe_preview',
+                              return_value={'preview_path': str(fixture.preview)}):
+                pending = auto.run(auto_request)
+            self.assertEqual(pending['status'], 'needs_content_review')
+            self.assertEqual(pending['human_review'], 'not_reviewed')
+            package = Path(pending['rehearsal']['package'])
             record = fixture.support.read(package / 'rehearsal.json')
             original = {p: fixture.support.file_hash(p) for p in (fixture.source, fixture.card,
                         package / 'rehearsal.json', package / 'draft-video.mp4')}
@@ -256,9 +268,23 @@ class ReviewedDeliveryMediaTests(unittest.TestCase):
                              'finding': 'Synthetic color bars, sine tone and fixture transcript; no actual user.'}}
             spec_path = private / 'delivery-spec.json'
             fixture.save(spec_path, spec)
-            result = call('delivery', 'build', '--spec', spec_path, '--task-id', 'synthetic-delivery')
+            auto_request['delivery_spec'] = str(spec_path)
+            request_path = private / 'auto-request.json'
+            fixture.save(request_path, auto_request)
+            report = call('auto', 'run', request_path)
+            self.assertEqual(report['status'], 'local_delivery_ready')
+            self.assertEqual(report['human_review'], 'prior_accepted_content_preserved')
+            self.assertEqual(report['new_visual_review'], 'not_reviewed')
+            result = report['delivery']
             self.assertEqual(result['status'], 'LOCAL_DELIVERY_NOT_SUBMITTED')
             final = Path(result['package'])
+            output_stamps = {p: (p.stat().st_mtime_ns, fixture.support.file_hash(p))
+                             for p in final.rglob('*') if p.is_file()}
+            self.assertEqual(call('auto', 'run', request_path), report)
+            self.assertEqual(call('auto', 'status', 'synthetic-auto'), report)
+            self.assertEqual(output_stamps, {p: (p.stat().st_mtime_ns, fixture.support.file_hash(p))
+                                           for p in final.rglob('*') if p.is_file()})
+            self.assertEqual(report['current_artifact']['video'], str(final / 'video.mp4'))
             self.assertEqual(call('delivery', 'check', '--package', final)['status'], result['status'])
             quality = fixture.support.read(final / 'quality.json')
             self.assertTrue(quality['source_cut_byte_identical'])
