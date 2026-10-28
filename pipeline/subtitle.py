@@ -3,6 +3,7 @@
 No transcription, candidate selection, content cutting or speed changes.
 """
 import argparse
+import apparel_vocabulary
 import json
 import math
 import os
@@ -238,6 +239,7 @@ def cues_from_review(selected, review, style, dictionary):
                    for clip_id, y in clip_positions.items())):
         raise ValueError('clip_positions须为当前有字幕片段clip_id到有限纵向百分比的映射（0至100之间）')
     replacements = dictionary['replacements']
+    profile_name = runtime_profile()['name']
     for item in review['cues']:
         if 'position_y_percent' in item or 'clip_positions' in item:
             raise ValueError('不得逐句移动字幕；仅在review.clip_positions按片段指定固定位置')
@@ -246,8 +248,16 @@ def cues_from_review(selected, review, style, dictionary):
         if not ids or ids != [s['id'] for s in span] or len({s['clip_id'] for s in span}) != 1:
             raise ValueError('字幕须完整按组合顺序消费segment，不可跨剪辑接点')
         position += len(ids)
-        text = ''.join(clean(s['text'], replacements) for s in span)
-        raw = text
+        normalized, normalizations = [], []
+        for segment in span:
+            value, edits = segment['text'], []
+            # Explicit review corrections govern this cue and must not be overwritten.
+            if not item.get('corrections'):
+                value, edits = apparel_vocabulary.normalize(value, dictionary, profile_name)
+            normalized.append(clean(value, replacements))
+            normalizations.extend(dict(edit, segment_id=segment['id']) for edit in edits)
+        text = ''.join(normalized)
+        raw = ''.join(clean(segment['text'], replacements) for segment in span)
         for correction in item.get('corrections', []):
             old, new = correction['from'], correction['to']
             if not old or old not in text or not correction.get('reason'):
@@ -284,7 +294,10 @@ def cues_from_review(selected, review, style, dictionary):
             risks.append('高风险字段未据ASR确认事实')
         audit.append({'segment_ids':ids,'source_sha256':selected['original_sha256'],
                       'range':[span[0]['start'], span[-1]['end']],
-                      'raw':raw,'cleaned':text,'corrections':item.get('corrections',[]),'risks':risks})
+                      'raw':raw,'machine_raw': ''.join(s['text'] for s in span), 'cleaned':text,
+                      'normalizations':normalizations, 'dictionary_content_sha256':key(dictionary),
+                      'vocabulary_profile':profile_name,
+                      'corrections':item.get('corrections',[]),'risks':risks})
         if 'display_exception' in item:
             audit[-1]['display_exception'] = item['display_exception']
         if span[0]['clip_id'] in clip_positions:

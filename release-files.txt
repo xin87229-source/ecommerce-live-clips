@@ -86,3 +86,7 @@ docs/project-plan.md
 docs/tasks/2026-10-28-project-scope.md
 docs/tasks/2026-10-28-hold-validation.md
 docs/tasks/2026-10-28-public-package-trial.md
+pipeline/apparel_vocabulary.py
+tests/test_apparel_vocabulary.py
+docs/apparel-vocabulary.md
+docs/tasks/2026-10-28-apparel-vocabulary.md

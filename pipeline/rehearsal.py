@@ -10,12 +10,13 @@ import shutil
 
 from PIL import ImageFont
 
+import apparel_vocabulary
 import review_card
 import review_cut
 import subtitle
 from cover_layout import render as cover_render
 from media_adapter import MediaAdapter
-from runtime import INSTALL_ROOT, ROOT, config
+from runtime import INSTALL_ROOT, ROOT, config, profile
 from selector_support import atomic, file_hash, read, validate_transcript
 from source_windows import import_entry
 
@@ -82,6 +83,19 @@ def asr_input(path):
                 inputs={str(p): file_hash(p) for p in (path, extraction, cache, window)})
 
 
+
+def normalize_cue(cue, dictionary, profile_name):
+    original = cue['text']
+    displayed, edits = apparel_vocabulary.normalize(original, dictionary, profile_name)
+    if edits:
+        cue.update(text=displayed, raw_text=original, normalizations=edits)
+        # Changed text has no new word alignment; retain evidence, not borrowed timings.
+        if 'words' in cue:
+            cue['raw_words'] = cue.pop('words')
+        cue.pop('word_timing', None)
+    return cue
+
+
 def plan(spec_path):
     path = local(spec_path, ROOT / 'private-context')
     spec = read(path)
@@ -125,6 +139,9 @@ def plan(spec_path):
     for asr in asrs:
         inputs.update(asr['inputs'])
     by_extraction = {asr['extraction']: asr for asr in asrs}
+    dictionary = apparel_vocabulary.load()
+    profile_name = profile()['name']
+    inputs[str(apparel_vocabulary.dictionary_path.resolve())] = file_hash(apparel_vocabulary.dictionary_path)
     cues = []
     for clip in cut['segments']:
         start, end = clip['audio']['window_range']
@@ -146,6 +163,7 @@ def plan(spec_path):
             if segment['id'] in asr['timed_words']:
                 cues[-1].update(words=copy.deepcopy(asr['timed_words'][segment['id']]),
                                 word_timing='machine_alignment_not_verified')
+            normalize_cue(cues[-1], dictionary, profile_name)
     if not cues:
         raise ValueError('没有完整非空ASR原句，不能生成伪字幕')
     terms = spec.get('highlight_terms', [])
@@ -154,7 +172,7 @@ def plan(spec_path):
                    or re.search(r'[{}\\\x00-\x1f]', term) for term in terms)
             or len(set(terms)) != len(terms)
             or any(not any(term in cue['text'] for cue in cues) for term in terms)):
-        raise ValueError('highlight_terms须为选中机器原句内的不同完整词，不能补词或加入样式代码')
+        raise ValueError('highlight_terms须为选中显示字幕内的不同完整词，不能补词或加入样式代码')
     at = spec['cover_time']
     if type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at < cut['end_hold']['video_range'][0]:
         raise ValueError('封面时间须在实际内容内，不能取静音尾定格')
@@ -168,6 +186,10 @@ def plan(spec_path):
             'transcript_verified': False, 'copy_status': 'draft_not_fact_checked', 'spec': spec,
             'highlight_terms': terms, 'highlight_semantics': 'visual_emphasis_only_not_fact_approval',
             'cut': cut, 'asrs': asrs, 'cues': cues, 'inputs': inputs,
+            'vocabulary': {'profile': profile_name,
+                           'dictionary_sha256': inputs[str(apparel_vocabulary.dictionary_path.resolve())],
+                           'changed_segments': sum(bool(c.get('normalizations')) for c in cues),
+                           'meaning': 'spelling_normalization_not_listening_or_product_fact_approval'},
             'cover_source': {'window': visual['window'], 'window_at': window_at,
                              'source_at': visual['source_range'][0] + window_at - visual['window_range'][0]},
             'approvals': copy.deepcopy(cut['approvals'])}
@@ -206,6 +228,8 @@ def wrap(raw, font, width=960, highlights=(), highlight_font=None, bold=False, b
 
 def timed_pages(cue, fit, highlights=()):
     """Paginate one intact ASR segment at bound machine word times, never edit its text."""
+    if cue.get('normalizations'):
+        raise ValueError('术语修正后的长句缺少对应词时间；请重新转写或换完整短句，不能借用旧词时分页')
     words = cue.get('words')
     if (cue.get('word_timing') != 'machine_alignment_not_verified'
             or not isinstance(words, list) or not words):
@@ -375,7 +399,9 @@ def cards(record, output, video):
                     proposed_segments=parts, questions=questions,
                     versions=[dict(id='draft', label='完整待审演练', path=str(video), sha256=file_hash(video),
                                    duration_seconds=record['cut']['duration_seconds'],
-                                   changes=['本次从原片窗口重制，使用未核词机器字幕；无审批变化'], segments=parts)])
+                                   changes=[('从原片窗口重制；显示字幕按当前行业词库规范化，原转写留存；整体内容仍待审'
+                                             if record['vocabulary']['changed_segments'] else
+                                             '本次从原片窗口重制，使用未核词机器字幕；无审批变化')], segments=parts)])
         target = ROOT / 'private-context/rehearsals' / output.name / f'card-{index}.json'
         if target.exists():
             raise FileExistsError('原速卡说明已存在，使用新的task-id')
@@ -396,6 +422,10 @@ def page(record, links):
     timeline = ''.join(f'<tr><td>{esc(part["purpose"])}</td><td>{label(part["video_range"][0])}–{label(part["video_range"][1])}</td>'
                        f'<td>{label(part["audio"]["source_range"][0])}–{label(part["audio"]["source_range"][1])}</td>'
                        f'<td>{part["speed"]} 倍</td><td>{esc(part["visual_note"])}</td></tr>' for part in record['cut']['segments'])
+    edits = [(cue['id'], change) for cue in record['cues'] for change in cue.get('normalizations', [])]
+    normalization_note = ('<p>行业词规范化（仅显示字幕）：' + '；'.join(
+        esc(f"{sid}：{item['from']} → {item['to']}") for sid, item in edits)
+        + '。原转写和修改记录保留；规范化不代表实际听审或商品事实确认，整片内容仍待验收。</p>') if edits else ''
     reading = record.get('subtitle_readability')
     reading_note = (f'<p>字幕阅读检查：{reading["original_segment_count"]} 个机器原段整理为 '
                     f'{reading["display_cue_count"]} 条显示字幕；短停留提醒 {len(reading["short_cues"])} 条，'
@@ -410,7 +440,7 @@ def page(record, links):
 <p>这里只验证本地素材与字段齐备。没有真实平台登录、上传、挂车、排期或提交；抖音真实后台交互未验证。</p>
 <p><a href="draft-subtitle.srt">机器字幕 SRT</a> · <a href="draft-subtitle.ass">机器字幕 ASS</a> · <a href="cover-4x3.jpg">横封面</a> · <a href="simulation.json">文件检查记录</a></p></section>
 <section><h2>选段作用与原片时间</h2><div class="scroll"><table><thead><tr><th>作用</th><th>成片位置</th><th>原片原声区间</th><th>速度</th><th>画面关系</th></tr></thead><tbody>{timeline}</tbody></table></div><p>尾部定格 {record['cut']['end_hold']['seconds']} 秒；字幕不延伸到静音尾部。<a href="rehearsal.json">完整来源、窗口与版本绑定</a></p></section>
-<section><h2>分项质量</h2><p>媒体解码、帧率、字幕文件、中文字体、封面排版：技术检查通过。原话核词、同款、连续画面、原声听感、最终用户验收：均待真实审核。</p>{reading_note}<p><a href="quality.md">可读质量清单</a> · <a href="quality.json">技术结果与内容状态</a></p></section>
+<section><h2>分项质量</h2><p>媒体解码、帧率、字幕文件、中文字体、封面排版：技术检查通过。原话核词、同款、连续画面、原声听感、最终用户验收：完整审核尚未完成。</p>{normalization_note}{reading_note}<p><a href="quality.md">可读质量清单</a> · <a href="quality.json">技术结果与内容状态</a></p></section>
 <section><h2>逐段核实</h2><ul>{questions}</ul><p>所有内容审核均为未通过审核；自然语言反馈不自动变成审批。</p></section></html>'''
 
 
@@ -438,7 +468,7 @@ def build(spec_path, task_id):
     ass, srt, cues = subtitles(record, style, family, font, highlight_font)
     record['subtitle_readability'] = readability(cues, len(record['cues']))
     for path in (Path(__file__), INSTALL_ROOT / 'pipeline/review_cut.py', INSTALL_ROOT / 'pipeline/subtitle.py',
-                 INSTALL_ROOT / 'pipeline/cover_layout.py', subtitle.STYLE, INSTALL_ROOT / 'pipeline/cover_config.json',
+                 INSTALL_ROOT / 'pipeline/cover_layout.py', Path(apparel_vocabulary.__file__), subtitle.STYLE, INSTALL_ROOT / 'pipeline/cover_config.json',
                  ROOT / 'config.json', font_path, highlight_path):
         record['inputs'][str(path.resolve())] = file_hash(path)
     review_cut.verify_inputs(record)
@@ -482,7 +512,8 @@ def build(spec_path, task_id):
                                 'frames': frames, 'note': '仅媒体检查，不代表画面、声音、商品或原话审核'},
                    'content': copy.deepcopy(record['approvals']), 'cover_layout': layouts,
                    'subtitle': {'source': 'unverified_machine_transcript', 'complete_segments_only': True,
-                                'original_text_unchanged': True, 'watermark': WATERMARK,
+                                'original_text_unchanged': not record['vocabulary']['changed_segments'],
+                                'original_texts_preserved': True, 'vocabulary': record['vocabulary'], 'watermark': WATERMARK,
                                 'font_size': style['font_size'], 'highlight_font_size': style.get('highlight_font_size'),
                                 'highlight_bold': style.get('highlight_bold', False),
                                 'highlight_color': style['highlight_color'], 'highlight_terms': record['highlight_terms'],
@@ -499,7 +530,7 @@ def build(spec_path, task_id):
                '| 项目 | 实际状态 |\n| --- | --- |\n'
                '| 媒体解码、30 fps、帧数、音频保留 | 技术检查通过 |\n'
                '| 中文字体、字幕安全宽度、封面文字区 | 技术检查通过 |\n'
-               '| 原话核词 | 未核实；字幕来自机器原文完整段 |\n'
+               '| 原话核词 | 完整机器原段保留；显示字幕可作行业术语规范化，整体原话仍待核实 |\n'
                '| 商品同款 | 未确认 |\n| 连续画面与实际原声听感 | 未完成真实审核 |\n'
                '| 封面与文案内容事实 | 草稿，待核实 |\n| 用户最终验收 | 未通过审核 |\n'
                '| 平台后台交互 | 未验证，仅本地演练 |\n| 上传、提交 | 均未执行 |\n\n'

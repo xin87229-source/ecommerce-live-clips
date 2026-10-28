@@ -157,6 +157,30 @@ class SubtitlePortableTests(unittest.TestCase):
         self.assertIn('00:00:02,000 --> 00:00:04,000', srt)
         self.assertIn(r'\pos(540,288)', ass)
 
+    def test_apparel_formal_subtitles_audit_normalization_and_preserve_manual_priority(self):
+        selected = {'original_sha256': 'f' * 64, 'duration': 2,
+                    'segments': [dict(id='s1', clip_id='c1', start=10, end=12,
+                                      final_start=0, final_end=2, text='塔兔的容毛')]}
+        review = {'selected_hash': sub.key(selected),
+                  'cues': [dict(segment_ids=['s1'], lines=['獭兔的绒毛'])]}
+        with patch.object(sub, 'runtime_profile', return_value={'name': 'apparel'}):
+            cues, audit = sub.cues_from_review(selected, review, sub.read(sub.STYLE), sub.read(sub.DICTIONARY))
+            self.assertEqual(cues[0]['lines'], ['獭兔的绒毛'])
+            self.assertEqual(audit[0]['machine_raw'], '塔兔的容毛')
+            self.assertEqual(audit[0]['raw'], '塔兔的容毛')
+            self.assertEqual(len(audit[0]['normalizations']), 2)
+            self.assertEqual(selected['segments'][0]['text'], '塔兔的容毛')
+            review['cues'][0].update(lines=['獭兔的绒毛'], corrections=[
+                {'from': '塔兔', 'to': '獭兔', 'reason': 'local reviewed fixture'},
+                {'from': '容毛', 'to': '绒毛', 'reason': 'local reviewed fixture'}])
+            _, audit = sub.cues_from_review(selected, review, sub.read(sub.STYLE), sub.read(sub.DICTIONARY))
+            self.assertEqual(audit[0]['normalizations'], [])
+            self.assertEqual(len(audit[0]['corrections']), 2)
+        with patch.object(sub, 'runtime_profile', return_value={'name': 'basic'}):
+            review['cues'][0] = dict(segment_ids=['s1'], lines=['獭兔的绒毛'])
+            with self.assertRaises(ValueError):
+                sub.cues_from_review(selected, review, sub.read(sub.STYLE), sub.read(sub.DICTIONARY))
+
     def test_unsupported_rewrite_or_unknown_number_is_rejected(self):
         selected = {'original_sha256': 'f' * 64, 'duration': 2,
                     'segments': [dict(id='s1', clip_id='c1', start=10, end=12,

@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 import test_review_cut as cut_fixture
 
@@ -82,6 +83,54 @@ class RehearsalTests(unittest.TestCase):
         self.assertTrue(all(v == 'not_reviewed' for v in planned['approvals'].values()))
         self.assertEqual(self.card.read_bytes(), original)
         self.assertFalse((self.workspace / 'outputs/reviews/rehearsals').exists())
+
+    def test_apparel_normalization_keeps_raw_source_and_approval_boundaries(self):
+        self.save(self.workspace / 'config.json', {'profile': 'apparel'})
+        self.context['profile'] = self.runtime.profile()
+        self.save(self.card, {'status': 'NOT_UPLOADED_NOT_SUBMITTED', 'submitted': False,
+                             'task_context': self.context})
+        raw = '塔兔容毛让你创生背后或者显肥'
+        self.bind_asr(self.extraction, raw)
+        before = {p: p.read_bytes() for p in (self.preview, self.transcript, self.card)}
+        api = self.api()
+        record = api.plan(self.rehearsal)
+        cue = record['cues'][0]
+        self.assertEqual(cue['text'], '獭兔绒毛让你穿上身背厚或者显肥')
+        self.assertEqual(cue['raw_text'], raw)
+        self.assertEqual(len(cue['normalizations']), 4)
+        self.assertEqual(cue['start'], 0)
+        self.assertAlmostEqual(cue['end'], 3 / 1.3)
+        self.assertEqual(cue['source_range'], [11, 14])
+        self.assertEqual(record['vocabulary']['changed_segments'], 1)
+        self.assertTrue(all(v == 'not_reviewed' for v in record['approvals'].values()))
+        self.assertFalse(record['transcript_verified'])
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        self.assertIn(str(api.apparel_vocabulary.dictionary_path.resolve()), record['inputs'])
+        self.assertIn('獭兔', api.page(record, []))
+
+    def test_changed_cue_keeps_machine_timing_as_evidence_not_new_alignment(self):
+        api = self.api()
+        cue = dict(text='塔兔', words=[dict(word='塔兔', start=1, end=4, probability=.9)],
+                   word_timing='machine_alignment_not_verified', start=0, end=3)
+        old_words = copy.deepcopy(cue['words'])
+        api.normalize_cue(cue, api.apparel_vocabulary.load(), 'apparel')
+        self.assertEqual(cue['raw_words'], old_words)
+        self.assertNotIn('words', cue)
+        self.assertNotIn('word_timing', cue)
+        self.assertEqual((cue['start'], cue['end']), (0, 3))
+        with self.assertRaisesRegex(ValueError, '不能借用旧词时'):
+            api.timed_pages(cue, lambda text: [text])
+
+    def test_vocabulary_input_change_invalidates_plan(self):
+        api = self.api()
+        dictionary = self.workspace / 'dictionary-copy.json'
+        dictionary.write_bytes(api.apparel_vocabulary.dictionary_path.read_bytes())
+        with patch.object(api.apparel_vocabulary, 'dictionary_path', dictionary):
+            record = api.plan(self.rehearsal)
+            api.review_cut.verify_inputs(record)
+            dictionary.write_bytes(dictionary.read_bytes() + b' ')
+            with self.assertRaisesRegex(ValueError, '变化'):
+                api.review_cut.verify_inputs(record)
 
     def test_partial_asr_segment_is_rejected_with_full_boundary(self):
         self.spec['clips'][0]['window_range'] = [1.2, 4]
