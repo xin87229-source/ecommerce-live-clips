@@ -7,7 +7,7 @@ import re
 import zipfile
 
 INSTALL = Path(__file__).resolve().parents[1]
-TOP_FILES = {'VERSION', 'README.md', 'THIRD_PARTY_NOTICES.md', 'LICENSE',
+TOP_FILES = {'AGENTS.md', 'VERSION', 'README.md', 'THIRD_PARTY_NOTICES.md', 'LICENSE',
              'requirements.txt', 'release-files.txt', '.gitignore', 'cli.py', 'CHANGELOG.md'}
 DIRECTORIES = {'docs', 'pipeline', 'presets', 'tests', 'tools', 'examples', '.agents'}
 EXTENSIONS = {'.py', '.md', '.txt', '.json', '.yaml', '.yml'}

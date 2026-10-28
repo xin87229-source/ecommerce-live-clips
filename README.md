@@ -4,9 +4,11 @@
 
 采用完整仓库＋项目内 Skill 入口：下载完整项目并在 Codex 中打开，让 AI 读取 [Skill 入口](.agents/skills/ecommerce-live-clips/SKILL.md)。不能只复制一个 SKILL.md。当前版本见 [VERSION](VERSION)，已验证内容和待验收项统一见 [验证状态](docs/release-status.md)；新候选按源码清单指纹区分，旧 ZIP 不代表当前代码。
 
-[项目官网](https://azhen-live-clips.jacquesostrovsky.chatgpt.site/) · [独立自测记录](https://azhen-live-clips.jacquesostrovsky.chatgpt.site/testing/) · [安装与首条制作协助](https://azhen-live-clips.jacquesostrovsky.chatgpt.site/service/)
+[项目任务与规划](docs/project-plan.md) · [实际验证状态](docs/release-status.md) · [免费首次使用交接](docs/service-handoff.md)
 
-当前仍为预发布候选。自测记录不替代新电脑、外部运营或真实业务验收；协助服务的具体范围见服务页，内容事实与最终成片仍需实际核对。
+当前定位为独立、免费、公开的 Skill；只借鉴既有业务切片流程，独立维护和验收，不依赖私人 Skill 或任何网站。现有本地审片页面继续作为交付工具。可下载开源软件及收费机制留待 Skill 成熟后另行启动，当前不开发。
+
+当前仍为预发布候选。自测记录不替代新电脑、外部运营或真实业务验收，内容事实与最终成片仍需实际核对。
 
 已完成真实完整内容确认的演练稿，可按[已审稿交付](docs/reviewed-delivery.md)使用 `delivery build/check`：从原片窗口重新生成，保留已核准原声和字幕，只去除待审标记并补齐正式封面文案。审核范围和新画面检查分别记录，仍不执行平台上传。
 
@@ -49,6 +51,6 @@ rc.5 增加 [一次委托制作入口](docs/one-click.md) 与 [按商品选择�
 
 先用 [无隐私技术示例](examples/README.md) 检查媒体、中文字幕和本地模型，再用自己的女装原片走 [快速开始](docs/quickstart.md)。需要先比较剪法时，用 [待审粗剪与听审卡](docs/human-review.md)，把实际改动、原片范围与反馈留在独立工作区。运营无需手写 JSON。
 
-目前已完成同一商家的三款真实内容验收与通用本地交付，包含两次换款复用。三位目标运营的 [外部试用](docs/external-trial.md) 与全新电脑验证暂缓，仍未验证；跨商家、其他风格和子类目不因此通过。这仍是预发布候选。没有试用人选时可先准备[安装与首条制作协助的范围及交接单](docs/service-handoff.md)，不要把准备材料写成已成交或外部独立成功。非女装验证放到后续扩展，已有 `basic` 功能保留。
+目前已完成同一商家的三款真实内容验收与通用本地交付，包含两次换款复用。三位目标运营的 [外部试用](docs/external-trial.md) 与全新电脑验证暂缓，仍未验证；跨商家、其他风格和子类目不因此通过。这仍是预发布候选。没有试用人选时可先完善[免费首次使用交接](docs/service-handoff.md)，不要把准备材料写成外部独立成功。非女装验证放到后续扩展，已有 `basic` 功能保留。
 
 项目原创代码及文档采用 [MIT](LICENSE)，允许使用、修改、再分发和收费，须保留版权及许可声明。第三方代码保留各自声明，商家素材、模型、字体和运行环境不随仓库分发。见 [发布与许可说明](docs/release-preparation.md)、[第三方声明](THIRD_PARTY_NOTICES.md)。

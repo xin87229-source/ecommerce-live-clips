@@ -16,8 +16,8 @@ class CandidateTests(unittest.TestCase):
         self.source = self.root / 'source'
         self.source.mkdir()
         for name, value in {'VERSION': '0.1.0-rc.2\n', 'cli.py': 'print("local")\n',
-                            'README.md': '# Test\n', 'private-note.txt': 'do not ship\n',
-                            'release-files.txt': 'VERSION\ncli.py\nREADME.md\nrelease-files.txt\n'}.items():
+                            'README.md': '# Test\n', 'AGENTS.md': '# Project boundary\n', 'private-note.txt': 'do not ship\n',
+                            'release-files.txt': 'VERSION\ncli.py\nREADME.md\nAGENTS.md\nrelease-files.txt\n'}.items():
             (self.source / name).write_text(value, encoding='utf-8')
         self.out = self.root / 'candidates'
         spec = importlib.util.spec_from_file_location('candidate_builder', MODULE)
@@ -31,10 +31,10 @@ class CandidateTests(unittest.TestCase):
         first = self.module.build(self.source, self.out)
         with zipfile.ZipFile(first['archive']) as archive:
             names = {name.split('/', 1)[1] for name in archive.namelist()}
-            self.assertEqual(names, {'VERSION', 'cli.py', 'README.md', 'release-files.txt',
+            self.assertEqual(names, {'VERSION', 'cli.py', 'README.md', 'AGENTS.md', 'release-files.txt',
                                     'SOURCE-MANIFEST.json', 'CANDIDATE.json', 'PRIVACY-SCAN.json'})
             manifest = json.loads(archive.read(first['id'] + '/SOURCE-MANIFEST.json'))
-            self.assertEqual(len(manifest['files']), 4)
+            self.assertEqual(len(manifest['files']), 5)
         with self.assertRaises(FileExistsError):
             self.module.build(self.source, self.out)
         (self.source / 'README.md').write_text('# Revised\n', encoding='utf-8')

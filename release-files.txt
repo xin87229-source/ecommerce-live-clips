@@ -81,3 +81,6 @@ pipeline/reviewed_delivery.py
 tests/test_reviewed_delivery.py
 docs/reviewed-delivery.md
 docs/service-handoff.md
+AGENTS.md
+docs/project-plan.md
+docs/tasks/2026-10-28-project-scope.md
