@@ -1,10 +1,11 @@
-"""Small apparel vocabulary for traceable, nonnumeric display edits."""
+"""Apparel vocabulary and meanings; only explicit rules change display text."""
 import json
 import re
 
 from runtime import INSTALL_ROOT, profile as runtime_profile
 
 dictionary_path = INSTALL_ROOT / 'pipeline/subtitle_dictionary.json'
+MAX_TERMS = 1000
 NUMERIC = r'[零〇一二两兩三四五六七八九十百千万萬亿億\d]'
 
 
@@ -31,9 +32,18 @@ def validate(dictionary):
         plain(group, '词汇分组', 30)
         if not isinstance(values, list) or not values:
             raise ValueError('词汇分组须为非空列表')
-        terms.extend(plain(value, '行业词汇', 24) for value in values)
-    if len(terms) > 80 or len(set(terms)) != len(terms):
-        raise ValueError('行业词汇重复或超过80个')
+        for value in values:
+            if isinstance(value, dict):
+                if set(value) != {'term', 'meaning'}:
+                    raise ValueError('词条对象只接受term和meaning；旧字符串词条仍可用')
+                plain(value['meaning'], '词义说明', 180)
+                value = value['term']
+            term = plain(value, '行业词汇', 24)
+            if term != term.strip():
+                raise ValueError('行业词汇不得含首尾空白')
+            terms.append(term)
+    if len(terms) > MAX_TERMS or len(set(terms)) != len(terms):
+        raise ValueError(f'行业词汇重复或超过{MAX_TERMS}个')
     identifiers, sources = set(), set()
     for rule in rules:
         if not isinstance(rule, dict) or set(rule) != {'id', 'from', 'to', 'reason'}:

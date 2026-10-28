@@ -90,3 +90,4 @@ pipeline/apparel_vocabulary.py
 tests/test_apparel_vocabulary.py
 docs/apparel-vocabulary.md
 docs/tasks/2026-10-28-apparel-vocabulary.md
+docs/tasks/2026-10-28-vocabulary-expansion.md

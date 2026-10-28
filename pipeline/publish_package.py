@@ -24,7 +24,7 @@ PIPELINE_VERSION = '0.1.0'
 PRODUCTION = ['run.py','media_adapter.py','ffmpeg_subset.py','suggest.py','selector_support.py',
               'transcribe_adapter.py','combine.py','subtitle.py','edit_timeline.py',
               'review_cut.py','batch_plan.py','quality_support.py',
-              'subtitle_style.json','subtitle_dictionary.json','input_preflight.py',
+              'subtitle_style.json','subtitle_dictionary.json','apparel_vocabulary.py','input_preflight.py',
               'publish_package.py','cover_layout.py','cover_config.json']
 
 

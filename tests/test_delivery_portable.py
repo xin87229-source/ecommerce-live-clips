@@ -20,6 +20,34 @@ FONT = Path('C:/Windows/Fonts/msyh.ttc')
 
 
 class DeliveryPortableTests(unittest.TestCase):
+    def test_vocabulary_helper_change_during_finish_is_rejected(self):
+        production_hashes, render_template = delivery.production_hashes, delivery.render_template
+        with tempfile.TemporaryDirectory() as tmp:
+            package, draft_path, _, _ = self._package_fixture(tmp)
+            install = Path(tmp) / 'install'
+            (install / 'pipeline').mkdir(parents=True)
+            for name in set(delivery.PRODUCTION) | {'apparel_vocabulary.py'}:
+                (install / 'pipeline' / name).write_bytes((delivery.INSTALL_ROOT / 'pipeline' / name).read_bytes())
+            helper = install / 'pipeline/apparel_vocabulary.py'
+
+            def render_and_change(source, output, *args, **kwargs):
+                result = render_template(source, output, *args, **kwargs)
+                if output is not None:
+                    helper.write_bytes(helper.read_bytes() + b'\n# changed in synthetic finish\n')
+                return result
+
+            with self._gates(tmp), patch.object(delivery, 'INSTALL_ROOT', install), \
+                 patch.object(delivery, 'production_hashes', side_effect=production_hashes), \
+                 patch.object(delivery, 'render_template', side_effect=render_and_change):
+                with self.assertRaisesRegex(ValueError, '生产代码变化'):
+                    delivery.finish(package, draft_path, FONT)
+                info = json.loads((package / 'publish.json').read_text(encoding='utf-8'))
+                self.assertEqual(info['status'], 'integrity_failed')
+                evidence = info['production_code_check']
+                self.assertFalse(evidence['unchanged'])
+                self.assertNotEqual(evidence['before'][str(helper.resolve())],
+                                    evidence['after'][str(helper.resolve())])
+
     def test_prepare_complete_without_git_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)/'workspace'
