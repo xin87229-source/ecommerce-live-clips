@@ -237,12 +237,61 @@ class ReviewCutTests(unittest.TestCase):
         crossings = sum(a <= 0 < b for a, b in zip(tone, tone[1:]))
         self.assertAlmostEqual(crossings / (len(tone) / 48000), 440, delta=5,
                                msg='1.3x audio must preserve the original tone pitch')
-        frozen = subprocess.run([ffmpeg, '-v', 'error', '-ss', '1.8', '-i', str(output / 'preview.mp4'),
-                                 '-t', '0.4', '-an', '-vf', 'scale=16:16,format=rgb24', '-f', 'rawvideo', '-'],
-                                check=True, capture_output=True).stdout
-        frames = [frozen[i:i + 768] for i in range(0, len(frozen), 768)]
-        self.assertGreaterEqual(len(frames), 10)
-        self.assertEqual(len(set(frames)), 1, 'end hold must keep the final displayed frame')
+        content_frames = preview['frame_count'] - preview['end_hold']['frame_count']
+        self.assertEqual(content_frames, 48)
+        decoded = subprocess.run([ffmpeg, '-v', 'error', '-i', str(output / 'preview.mp4'),
+                                  '-an', '-vf', 'scale=16:16,format=rgb24', '-f', 'rawvideo', '-'],
+                                 check=True, capture_output=True).stdout
+        self.assertEqual(len(decoded), preview['frame_count'] * 768)
+        frames = [decoded[i:i + 768] for i in range(0, len(decoded), 768)]
+
+        def assert_encoded_hold(candidate):
+            reference = candidate[content_frames - 1]
+            for frame in candidate[content_frames:]:
+                errors = [abs(a - b) for a, b in zip(reference, frame)]
+                # This 16x16 testsrc2 fixture has small CRF18 quantization changes, not motion.
+                self.assertLessEqual(sum(errors) / len(errors), .1)
+                self.assertLessEqual(max(errors), 4)
+
+        assert_encoded_hold(frames)
+        for label, tail in (
+                ('black tail', [bytes(768)] * 18),
+                ('wrong frozen frame', [frames[0]] * 18),
+                ('continued motion', frames[:18])):
+            with self.subTest(encoded_negative=label), self.assertRaises(AssertionError):
+                assert_encoded_hold(frames[:content_frames] + tail)
+
+        api = self.api()
+        media = api.MediaAdapter({'ffmpeg_path': ffmpeg, 'ffprobe_path': ffprobe}, output / 'lossless.log')
+        write_media = media.write_media
+
+        def write_lossless(args, destination, **kwargs):
+            args = list(args)
+            args[args.index('-crf') + 1] = '0'
+            return write_media(args, destination, **kwargs)
+
+        baseline = None
+        for hold_frames in (18, 0, 1):
+            with self.subTest(lossless_hold_frames=hold_frames):
+                record = copy.deepcopy(preview)
+                record['end_hold'].update(frame_count=hold_frames, seconds=hold_frames / 30,
+                                          video_range=[content_frames / 30, (content_frames + hold_frames) / 30])
+                record['frame_count'] = content_frames + hold_frames
+                record['duration_seconds'] = record['frame_count'] / 30
+                video = output / f'lossless-hold-{hold_frames}.mp4'
+                # Keep the production filter chain; exact frame equality belongs before lossy coding.
+                with patch.object(media, 'write_media', side_effect=write_lossless):
+                    api.render(media, record, video)
+                digest = subprocess.run([ffmpeg, '-v', 'error', '-i', str(video), '-map', '0:v:0',
+                                         '-f', 'framemd5', '-'], check=True, capture_output=True, text=True).stdout
+                hashes = [row.rsplit(',', 1)[1].strip() for row in digest.splitlines() if not row.startswith('#')]
+                self.assertEqual(len(hashes), record['frame_count'])
+                if baseline is None:
+                    baseline = hashes[:content_frames]
+                    self.assertGreater(len(set(baseline)), 1, 'fixture must contain actual motion')
+                self.assertEqual(hashes[:content_frames], baseline, 'hold must not change content frames')
+                self.assertEqual(hashes[content_frames - 1:], [baseline[-1]] * (hold_frames + 1),
+                                 'every full-resolution hold frame must clone the final content frame')
 
 
 if __name__ == '__main__':
