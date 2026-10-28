@@ -67,6 +67,8 @@ if ($LASTEXITCODE -ne 0) { throw '依赖安装失败，请保留完整错误，�
 
 2026-10-18又在同一电脑新建了空虚拟环境，从软件包源按该requirements实际安装，并通过依赖检查、导入、中文媒体制作、本地模型加载和20秒真实原窗转写。该次使用PyPI发行版的faster-whisper，未复制旧虚拟环境。FFmpeg、模型文件和系统字体仍复用本机资源，因此不能当作新电脑安装或全部资源重新下载成功。
 
+2026-10-28 从固定公开源码ZIP再次新建独立环境，按全部固定版本安装并通过依赖检查、官方模型/字体重新下载、离线加载、技术样例和真实窗口转写。FFmpeg及基础Python仍复用本机资源，不算新电脑；本条素材的内容核词和正式交付仍待审。实际记录见[公开包试做](tasks/2026-10-28-public-package-trial.md)。
+
 ## 3. 取得 FFmpeg 与 FFprobe
 
 从 [FFmpeg 官方下载页](https://ffmpeg.org/download.html) 的 Windows EXE Files 进入其列出的 Windows 构建提供方，下载 x64 构建并解压。FFmpeg 官方提供源码，Windows 可执行文件由所列第三方构建方提供；不要把构建方称为 FFmpeg 官方发行版。保留下载来源、版本和构建方提供的校验值。

@@ -15,9 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'pipeline'))
 
 class AutoWorkflowTests(unittest.TestCase):
     def setUp(self):
-        base = Path(__file__).resolve().parents[2] / '工作区' / 'test-auto'
-        base.mkdir(parents=True, exist_ok=True)
-        self.temp = tempfile.TemporaryDirectory(dir=base)
+        self.temp = tempfile.TemporaryDirectory(prefix='工作区-test-auto-')
         self.root = Path(self.temp.name)
         self.env = patch.dict(os.environ, {'ECLIP_WORKSPACE': str(self.root)})
         self.env.start()

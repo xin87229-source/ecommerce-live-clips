@@ -85,3 +85,4 @@ AGENTS.md
 docs/project-plan.md
 docs/tasks/2026-10-28-project-scope.md
 docs/tasks/2026-10-28-hold-validation.md
+docs/tasks/2026-10-28-public-package-trial.md
