@@ -91,3 +91,7 @@ tests/test_apparel_vocabulary.py
 docs/apparel-vocabulary.md
 docs/tasks/2026-10-28-apparel-vocabulary.md
 docs/tasks/2026-10-28-vocabulary-expansion.md
+pipeline/audio_recheck.py
+tests/test_audio_recheck.py
+docs/audio-recheck.md
+docs/tasks/2026-10-29-audio-recheck.md

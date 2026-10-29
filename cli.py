@@ -17,7 +17,7 @@ STAGES = {'suggest': 'suggest', 'batch': 'batch_plan', 'import': 'batch_import',
           'package': 'publish_package', 'quality': 'quality_support', 'records': 'run_records',
           'window': 'source_windows', 'workflow': 'workflow', 'review-card': 'review_card',
           'review-cut': 'review_cut', 'auto': 'auto_workflow', 'rehearsal': 'rehearsal',
-          'delivery': 'reviewed_delivery'}
+          'delivery': 'reviewed_delivery', 'audio-recheck': 'audio_recheck'}
 
 
 def emit(value):

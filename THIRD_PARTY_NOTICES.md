@@ -56,3 +56,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Optional local audio second opinion (rc.17)
+
+- Official repository: https://github.com/QwenAudio/Fun-ASR . Windows CPU runtime tag `runtime-llamacpp-v0.2.1`; exact executable/archive hashes and model revision are in [audio recheck](docs/audio-recheck.md). The runtime uses llama.cpp/ggml; upstream license notices remain applicable.
+- Official model: `FunAudioLLM/Fun-ASR-Nano-GGUF`, revision `46e849502a867080d66d351b8dfb1018b607e509`; model card declares Apache-2.0. This is a model-specific statement, not a license claim for other ASR weights.
+- No upstream code, executable, model, audio, transcript or environment is redistributed. Our standard-library adapter calls the separately obtained pinned local executable with local files only. No TypeSafe/Jev, cloud API dependency or automatic paid fallback.
